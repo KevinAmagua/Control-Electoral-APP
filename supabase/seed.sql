@@ -1,5 +1,13 @@
 create extension if not exists pgcrypto;
 
+with seeded_users(instance_id, id, aud, role, email, encrypted_password, email_confirmed_at, raw_user_meta_data, created_at, updated_at) as (
+  values
+    ('00000000-0000-0000-0000-000000000000'::uuid, '11111111-1111-4111-8111-111111111111'::uuid, 'authenticated', 'authenticated', 'coordinador.provincial@adn.ec', crypt('Adn2026!', gen_salt('bf')), now(), jsonb_build_object('role', 'coordinador_provincial', 'must_change_password', true), now(), now()),
+    ('00000000-0000-0000-0000-000000000000'::uuid, '22222222-2222-4222-8222-222222222222'::uuid, 'authenticated', 'authenticated', 'coordinador.recinto@adn.ec', crypt('Adn2026!', gen_salt('bf')), now(), jsonb_build_object('role', 'coordinador_recinto', 'must_change_password', true), now(), now()),
+    ('00000000-0000-0000-0000-000000000000'::uuid, '33333333-3333-4333-8333-333333333333'::uuid, 'authenticated', 'authenticated', 'veedor.uno@adn.ec', crypt('Adn2026!', gen_salt('bf')), now(), jsonb_build_object('role', 'veedor', 'must_change_password', true), now(), now()),
+    ('00000000-0000-0000-0000-000000000000'::uuid, '44444444-4444-4444-8444-444444444444'::uuid, 'authenticated', 'authenticated', 'veedor.dos@adn.ec', crypt('Adn2026!', gen_salt('bf')), now(), jsonb_build_object('role', 'veedor', 'must_change_password', true), now(), now()),
+    ('00000000-0000-0000-0000-000000000000'::uuid, '55555555-5555-4555-8555-555555555555'::uuid, 'authenticated', 'authenticated', 'veedor.tres@adn.ec', crypt('Adn2026!', gen_salt('bf')), now(), jsonb_build_object('role', 'veedor', 'must_change_password', true), now(), now())
+)
 insert into auth.users (
   instance_id,
   id,
@@ -12,67 +20,19 @@ insert into auth.users (
   created_at,
   updated_at
 )
-values
-  (
-    '00000000-0000-0000-0000-000000000000',
-    '11111111-1111-4111-8111-111111111111',
-    'authenticated',
-    'authenticated',
-    'coordinador.provincial@adn.ec',
-    crypt('Adn2026!', gen_salt('bf')),
-    now(),
-    jsonb_build_object('role', 'coordinador_provincial', 'must_change_password', true),
-    now(),
-    now()
-  ),
-  (
-    '00000000-0000-0000-0000-000000000000',
-    '22222222-2222-4222-8222-222222222222',
-    'authenticated',
-    'authenticated',
-    'coordinador.recinto@adn.ec',
-    crypt('Adn2026!', gen_salt('bf')),
-    now(),
-    jsonb_build_object('role', 'coordinador_recinto', 'must_change_password', true),
-    now(),
-    now()
-  ),
-  (
-    '00000000-0000-0000-0000-000000000000',
-    '33333333-3333-4333-8333-333333333333',
-    'authenticated',
-    'authenticated',
-    'veedor.uno@adn.ec',
-    crypt('Adn2026!', gen_salt('bf')),
-    now(),
-    jsonb_build_object('role', 'veedor', 'must_change_password', true),
-    now(),
-    now()
-  ),
-  (
-    '00000000-0000-0000-0000-000000000000',
-    '44444444-4444-4444-8444-444444444444',
-    'authenticated',
-    'authenticated',
-    'veedor.dos@adn.ec',
-    crypt('Adn2026!', gen_salt('bf')),
-    now(),
-    jsonb_build_object('role', 'veedor', 'must_change_password', true),
-    now(),
-    now()
-  ),
-  (
-    '00000000-0000-0000-0000-000000000000',
-    '55555555-5555-4555-8555-555555555555',
-    'authenticated',
-    'authenticated',
-    'veedor.tres@adn.ec',
-    crypt('Adn2026!', gen_salt('bf')),
-    now(),
-    jsonb_build_object('role', 'veedor', 'must_change_password', true),
-    now(),
-    now()
-  )
+select
+  instance_id,
+  id,
+  aud,
+  role,
+  email,
+  encrypted_password,
+  email_confirmed_at,
+  raw_user_meta_data,
+  created_at,
+  updated_at
+from seeded_users v
+where not exists (select 1 from auth.users u where u.email = v.email)
 on conflict (id) do nothing;
 
 update auth.users
@@ -94,6 +54,14 @@ where email in (
   'veedor.tres@adn.ec'
 );
 
+with seeded_identities(id, user_id, provider_id, provider, identity_data, last_sign_in_at, created_at, updated_at) as (
+  values
+    ('a1111111-1111-4111-8111-111111111111'::uuid, '11111111-1111-4111-8111-111111111111'::uuid, '11111111-1111-4111-8111-111111111111', 'email', jsonb_build_object('sub', '11111111-1111-4111-8111-111111111111', 'email', 'coordinador.provincial@adn.ec', 'email_verified', true), now(), now(), now()),
+    ('a2222222-2222-4222-8222-222222222222'::uuid, '22222222-2222-4222-8222-222222222222'::uuid, '22222222-2222-4222-8222-222222222222', 'email', jsonb_build_object('sub', '22222222-2222-4222-8222-222222222222', 'email', 'coordinador.recinto@adn.ec', 'email_verified', true), now(), now(), now()),
+    ('a3333333-3333-4333-8333-333333333333'::uuid, '33333333-3333-4333-8333-333333333333'::uuid, '33333333-3333-4333-8333-333333333333', 'email', jsonb_build_object('sub', '33333333-3333-4333-8333-333333333333', 'email', 'veedor.uno@adn.ec', 'email_verified', true), now(), now(), now()),
+    ('a4444444-4444-4444-8444-444444444444'::uuid, '44444444-4444-4444-8444-444444444444'::uuid, '44444444-4444-4444-8444-444444444444', 'email', jsonb_build_object('sub', '44444444-4444-4444-8444-444444444444', 'email', 'veedor.dos@adn.ec', 'email_verified', true), now(), now(), now()),
+    ('a5555555-5555-4555-8555-555555555555'::uuid, '55555555-5555-4555-8555-555555555555'::uuid, '55555555-5555-4555-8555-555555555555', 'email', jsonb_build_object('sub', '55555555-5555-4555-8555-555555555555', 'email', 'veedor.tres@adn.ec', 'email_verified', true), now(), now(), now())
+)
 insert into auth.identities (
   id,
   user_id,
@@ -104,12 +72,21 @@ insert into auth.identities (
   created_at,
   updated_at
 )
-values
-  ('a1111111-1111-4111-8111-111111111111', '11111111-1111-4111-8111-111111111111', '11111111-1111-4111-8111-111111111111', 'email', jsonb_build_object('sub', '11111111-1111-4111-8111-111111111111', 'email', 'coordinador.provincial@adn.ec', 'email_verified', true), now(), now(), now()),
-  ('a2222222-2222-4222-8222-222222222222', '22222222-2222-4222-8222-222222222222', '22222222-2222-4222-8222-222222222222', 'email', jsonb_build_object('sub', '22222222-2222-4222-8222-222222222222', 'email', 'coordinador.recinto@adn.ec', 'email_verified', true), now(), now(), now()),
-  ('a3333333-3333-4333-8333-333333333333', '33333333-3333-4333-8333-333333333333', '33333333-3333-4333-8333-333333333333', 'email', jsonb_build_object('sub', '33333333-3333-4333-8333-333333333333', 'email', 'veedor.uno@adn.ec', 'email_verified', true), now(), now(), now()),
-  ('a4444444-4444-4444-8444-444444444444', '44444444-4444-4444-8444-444444444444', '44444444-4444-4444-8444-444444444444', 'email', jsonb_build_object('sub', '44444444-4444-4444-8444-444444444444', 'email', 'veedor.dos@adn.ec', 'email_verified', true), now(), now(), now()),
-  ('a5555555-5555-4555-8555-555555555555', '55555555-5555-4555-8555-555555555555', '55555555-5555-4555-8555-555555555555', 'email', jsonb_build_object('sub', '55555555-5555-4555-8555-555555555555', 'email', 'veedor.tres@adn.ec', 'email_verified', true), now(), now(), now())
+select
+  id,
+  user_id,
+  provider_id,
+  provider,
+  identity_data,
+  last_sign_in_at,
+  created_at,
+  updated_at
+from seeded_identities v
+where not exists (
+  select 1 from auth.identities i
+  where i.user_id = v.user_id and i.provider = 'email'
+     or i.provider_id = v.provider_id
+)
 on conflict (id) do nothing;
 
 with seeded_organizations as (
@@ -220,81 +197,35 @@ on conflict (mesa_id, role) do update set
   full_name = excluded.full_name,
   cedula = excluded.cedula;
 
+with seeded_profiles(id, role, cedula, first_name, last_name, phone, email, email_verified, must_change_password, recinto_id, province, canton) as (
+  values
+    ('11111111-1111-4111-8111-111111111111'::uuid, 'coordinador_provincial'::public.user_role, '1700000001', 'Jairo Efraín', 'Maigua Aimacaña', '0980000001', 'coordinador.provincial@adn.ec', true, true, null::uuid, 'Pichincha', 'Quito'),
+    ('22222222-2222-4222-8222-222222222222'::uuid, 'coordinador_recinto'::public.user_role, '1700000019', 'Oscar Julián', 'Vázquez Borja', '0980000002', 'coordinador.recinto@adn.ec', true, true, (select id from public.recintos where code = 'QTO-001'), 'Pichincha', 'Quito'),
+    ('33333333-3333-4333-8333-333333333333'::uuid, 'veedor'::public.user_role, '1700000027', 'Milka Elizabeth', 'Borja Quinto', '0980000003', 'veedor.uno@adn.ec', true, true, (select id from public.recintos where code = 'QTO-001'), 'Pichincha', 'Quito'),
+    ('44444444-4444-4444-8444-444444444444'::uuid, 'veedor'::public.user_role, '1700000035', 'Kevin Alexander', 'Amagua Valenzuela', '0980000004', 'veedor.dos@adn.ec', true, true, (select id from public.recintos where code = 'QTO-002'), 'Pichincha', 'Quito'),
+    ('55555555-5555-4555-8555-555555555555'::uuid, 'veedor'::public.user_role, '1700000043', 'Carlos Alberto', 'Rivadeneira Mosquera', '0980000005', 'veedor.tres@adn.ec', true, true, (select id from public.recintos where code = 'QTO-003'), 'Pichincha', 'Quito')
+)
 insert into public.profiles (
   id, role, cedula, first_name, last_name, phone, email, email_verified,
   must_change_password, recinto_id, province, canton
 )
-values
-  (
-    '11111111-1111-4111-8111-111111111111',
-    'coordinador_provincial',
-    '1700000001',
-    'Jairo Efraín',
-    'Maigua Aimacaña',
-    '0980000001',
-    'coordinador.provincial@adn.ec',
-    true,
-    true,
-    null,
-    'Pichincha',
-    'Quito'
-  ),
-  (
-    '22222222-2222-4222-8222-222222222222',
-    'coordinador_recinto',
-    '1700000019',
-    'Oscar Julián',
-    'Vázquez Borja',
-    '0980000002',
-    'coordinador.recinto@adn.ec',
-    true,
-    true,
-    (select id from public.recintos where code = 'QTO-001'),
-    'Pichincha',
-    'Quito'
-  ),
-  (
-    '33333333-3333-4333-8333-333333333333',
-    'veedor',
-    '1700000027',
-    'Milka Elizabeth',
-    'Borja Quinto',
-    '0980000003',
-    'veedor.uno@adn.ec',
-    true,
-    true,
-    (select id from public.recintos where code = 'QTO-001'),
-    'Pichincha',
-    'Quito'
-  ),
-  (
-    '44444444-4444-4444-8444-444444444444',
-    'veedor',
-    '1700000035',
-    'Kevin Alexander',
-    'Amagua Valenzuela',
-    '0980000004',
-    'veedor.dos@adn.ec',
-    true,
-    true,
-    (select id from public.recintos where code = 'QTO-002'),
-    'Pichincha',
-    'Quito'
-  ),
-  (
-    '55555555-5555-4555-8555-555555555555',
-    'veedor',
-    '1700000043',
-    'Carlos Alberto',
-    'Rivadeneira Mosquera',
-    '0980000005',
-    'veedor.tres@adn.ec',
-    true,
-    true,
-    (select id from public.recintos where code = 'QTO-003'),
-    'Pichincha',
-    'Quito'
-  )
+select
+  id,
+  role,
+  cedula,
+  first_name,
+  last_name,
+  phone,
+  email,
+  email_verified,
+  must_change_password,
+  recinto_id,
+  province,
+  canton
+from seeded_profiles v
+where not exists (
+  select 1 from public.profiles p where p.email = v.email or p.cedula = v.cedula
+)
 on conflict (id) do update set
   role = excluded.role,
   cedula = excluded.cedula,
@@ -310,75 +241,60 @@ on conflict (id) do update set
   active = true,
   updated_at = now();
 
+with target_assignments(id, code, mesa_number, veedor_email) as (
+  values
+    ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1'::uuid, 'QTO-001', '001', 'veedor.uno@adn.ec'),
+    ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2'::uuid, 'QTO-001', '002', 'veedor.uno@adn.ec'),
+    ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa6'::uuid, 'QTO-001', '003', 'veedor.uno@adn.ec'),
+    ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3'::uuid, 'QTO-002', '001', 'veedor.dos@adn.ec'),
+    ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa7'::uuid, 'QTO-002', '002', 'veedor.dos@adn.ec'),
+    ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa8'::uuid, 'QTO-002', '003', 'veedor.dos@adn.ec'),
+    ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa4'::uuid, 'QTO-003', '001', 'veedor.tres@adn.ec'),
+    ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa9'::uuid, 'QTO-003', '002', 'veedor.tres@adn.ec'),
+    ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa5'::uuid, 'QTO-003', '003', 'veedor.tres@adn.ec')
+)
+update public.assignments a
+set active = false,
+    unassigned_at = coalesce(a.unassigned_at, now())
+from public.mesas m
+join public.recintos r on r.id = m.recinto_id
+join target_assignments t on t.code = r.code and t.mesa_number = m.number
+where a.mesa_id = m.id and a.active;
+
+with target_assignments(id, code, mesa_number, veedor_email) as (
+  values
+    ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1'::uuid, 'QTO-001', '001', 'veedor.uno@adn.ec'),
+    ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2'::uuid, 'QTO-001', '002', 'veedor.uno@adn.ec'),
+    ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa6'::uuid, 'QTO-001', '003', 'veedor.uno@adn.ec'),
+    ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3'::uuid, 'QTO-002', '001', 'veedor.dos@adn.ec'),
+    ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa7'::uuid, 'QTO-002', '002', 'veedor.dos@adn.ec'),
+    ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa8'::uuid, 'QTO-002', '003', 'veedor.dos@adn.ec'),
+    ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa4'::uuid, 'QTO-003', '001', 'veedor.tres@adn.ec'),
+    ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa9'::uuid, 'QTO-003', '002', 'veedor.tres@adn.ec'),
+    ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa5'::uuid, 'QTO-003', '003', 'veedor.tres@adn.ec')
+)
 insert into public.assignments (
-  id, mesa_id, veedor_id, assigned_by, reason
+  id, mesa_id, veedor_id, assigned_by, active, unassigned_at, replaces_assignment_id, reason
 )
 select
-  'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1'::uuid,
+  t.id,
   m.id,
-  '33333333-3333-4333-8333-333333333333'::uuid,
-  '22222222-2222-4222-8222-222222222222'::uuid,
+  veedor.id,
+  coordinador.id,
+  true,
+  null,
+  null,
   'asignacion_inicial'
-from public.mesas m
-join public.recintos r on r.id = m.recinto_id
-where r.code = 'QTO-001' and m.number = '001'
-on conflict (id) do nothing;
-
-insert into public.assignments (
-  id, mesa_id, veedor_id, assigned_by, reason
-)
-select
-  'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2'::uuid,
-  m.id,
-  '33333333-3333-4333-8333-333333333333'::uuid,
-  '22222222-2222-4222-8222-222222222222'::uuid,
-  'asignacion_inicial'
-from public.mesas m
-join public.recintos r on r.id = m.recinto_id
-where r.code = 'QTO-001' and m.number = '002'
-on conflict (id) do nothing;
-
-insert into public.assignments (
-  id, mesa_id, veedor_id, assigned_by, reason
-)
-select
-  'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3'::uuid,
-  m.id,
-  '44444444-4444-4444-8444-444444444444'::uuid,
-  '22222222-2222-4222-8222-222222222222'::uuid,
-  'asignacion_inicial'
-from public.mesas m
-join public.recintos r on r.id = m.recinto_id
-where r.code = 'QTO-002' and m.number = '001'
-on conflict (id) do nothing;
-
-insert into public.assignments (
-  id, mesa_id, veedor_id, assigned_by, active, unassigned_at, reason
-)
-select
-  'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa4'::uuid,
-  m.id,
-  '55555555-5555-4555-8555-555555555555'::uuid,
-  '22222222-2222-4222-8222-222222222222'::uuid,
-  false,
-  now(),
-  'veedor_ausente'
-from public.mesas m
-join public.recintos r on r.id = m.recinto_id
-where r.code = 'QTO-003' and m.number = '001'
-on conflict (id) do nothing;
-
-insert into public.assignments (
-  id, mesa_id, veedor_id, assigned_by, replaces_assignment_id, reason
-)
-select
-  'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa5'::uuid,
-  m.id,
-  '44444444-4444-4444-8444-444444444444'::uuid,
-  '22222222-2222-4222-8222-222222222222'::uuid,
-  'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa4'::uuid,
-  'reemplazo_veedor_ausente'
-from public.mesas m
-join public.recintos r on r.id = m.recinto_id
-where r.code = 'QTO-003' and m.number = '001'
-on conflict (id) do nothing;
+from target_assignments t
+join public.recintos r on r.code = t.code
+join public.mesas m on m.recinto_id = r.id and m.number = t.mesa_number
+join public.profiles veedor on veedor.email = t.veedor_email
+join public.profiles coordinador on coordinador.email = 'coordinador.recinto@adn.ec'
+on conflict (id) do update set
+  mesa_id = excluded.mesa_id,
+  veedor_id = excluded.veedor_id,
+  assigned_by = excluded.assigned_by,
+  active = true,
+  unassigned_at = null,
+  replaces_assignment_id = null,
+  reason = excluded.reason;

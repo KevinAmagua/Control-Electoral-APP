@@ -11,6 +11,7 @@ import Animated, {
 
 import { palette, radius, spacing, typography } from '@/core/theme';
 import { ACTA_STATUS_LABELS, type ActaStatus } from '@/domain/acta/acta-status';
+import { useScreenScrollToTop } from '@/presentation/components/layout/Screen';
 
 export type FeedbackStatus = ActaStatus | 'validacion' | 'guardado_local' | 'enviado';
 
@@ -46,6 +47,7 @@ const tones: Record<FeedbackStatus, string> = {
 
 export function StatusFeedback({ status, message }: StatusFeedbackProps) {
   const pulse = useSharedValue(1);
+  const scrollToTop = useScreenScrollToTop();
 
   useEffect(() => {
     pulse.value = withRepeat(
@@ -58,6 +60,10 @@ export function StatusFeedback({ status, message }: StatusFeedbackProps) {
       pulse.value = 1;
     };
   }, [status, pulse]);
+
+  useEffect(() => {
+    scrollToTop?.();
+  }, [scrollToTop, status, message]);
 
   const animatedStyle = useAnimatedStyle(() => ({
     transform: [{ scale: pulse.value }],

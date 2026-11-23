@@ -1,5 +1,12 @@
-import type { PropsWithChildren, ReactNode } from 'react';
-import { ScrollView, StyleSheet, Text, View } from 'react-native';
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useRef,
+  type PropsWithChildren,
+  type ReactNode,
+} from 'react';
+import { ScrollView, StyleSheet, Text, View, type ScrollViewInstance } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { palette, spacing, typography } from '@/core/theme';
@@ -10,23 +17,41 @@ type ScreenProps = PropsWithChildren<{
   action?: ReactNode;
 }>;
 
+type ScreenScrollContextValue = {
+  scrollToTop: () => void;
+};
+
+const ScreenScrollContext = createContext<ScreenScrollContextValue | null>(null);
+
+export function useScreenScrollToTop() {
+  return useContext(ScreenScrollContext)?.scrollToTop;
+}
+
 export function Screen({ title, subtitle, action, children }: ScreenProps) {
+  const scrollRef = useRef<ScrollViewInstance>(null);
+  const scrollToTop = useCallback(() => {
+    scrollRef.current?.scrollTo({ x: 0, y: 0, animated: true });
+  }, []);
+
   return (
-    <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
-      <View style={styles.header}>
-        <View style={styles.headerText}>
-          <Text style={styles.title}>{title}</Text>
-          {subtitle ? <Text style={styles.subtitle}>{subtitle}</Text> : null}
+    <ScreenScrollContext.Provider value={{ scrollToTop }}>
+      <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
+        <View style={styles.header}>
+          <View style={styles.headerText}>
+            <Text style={styles.title}>{title}</Text>
+            {subtitle ? <Text style={styles.subtitle}>{subtitle}</Text> : null}
+          </View>
+          {action}
         </View>
-        {action}
-      </View>
-      <ScrollView
-        style={styles.scroll}
-        contentContainerStyle={styles.content}
-        keyboardShouldPersistTaps="handled">
-        {children}
-      </ScrollView>
-    </SafeAreaView>
+        <ScrollView
+          ref={scrollRef}
+          style={styles.scroll}
+          contentContainerStyle={styles.content}
+          keyboardShouldPersistTaps="handled">
+          {children}
+        </ScrollView>
+      </SafeAreaView>
+    </ScreenScrollContext.Provider>
   );
 }
 
