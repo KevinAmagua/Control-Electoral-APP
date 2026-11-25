@@ -5,7 +5,7 @@ import type { AssignmentRepository } from '../repositories/assignment-repository
 import type { TerritoryRepository } from '../repositories/territory-repository';
 import type { UserRepository } from '../repositories/user-repository';
 import { canAccessRecinto } from '../user/permissions';
-import { createRecintoSchema } from '../validation/territory';
+import { createRecintoSchema, recintoCodePrefixForLocation } from '../validation/territory';
 import { formatValidationError } from '../validation/messages';
 
 type TerritoryUseCaseDependencies = {
@@ -34,6 +34,13 @@ export function createRecintoUseCase(dependencies: Pick<TerritoryUseCaseDependen
     }
     if (parsed.data.province !== actor.province || parsed.data.canton !== actor.canton) {
       return failure('FUERA_DE_JURISDICCION', 'El recinto debe pertenecer a su provincia y cantón');
+    }
+    const expectedPrefix = recintoCodePrefixForLocation(
+      parsed.data.province,
+      parsed.data.canton,
+    );
+    if (!parsed.data.code.startsWith(expectedPrefix)) {
+      return failure('CODIGO_FUERA_DE_JURISDICCION', `El código debe iniciar con ${expectedPrefix}`);
     }
 
     return dependencies.territory.createRecinto(parsed.data);

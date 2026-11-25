@@ -279,7 +279,7 @@
 - `ADR-01`: Supabase Auth con creación jerárquica desde la Edge Function `create-user`, clave temporal y cambio obligatorio en el primer ingreso.
 - `ADR-02`: Invitaciones, confirmación y recuperación con SMTP personalizado y redirección `controlectoraladn://callback`.
 - `ADR-03`: Persistencia local en `expo-sqlite`, outbox con UUID idempotente, estados `pendiente`, `en_proceso`, `guardado_local`, `enviado` y `fallado`.
-- `ADR-04`: Captura con `expo-camera`, GPS con `expo-location`, vista previa con advertencia de nitidez y mapa nativo con `expo-maps` solo en Android/iOS.
+- `ADR-04`: Captura con `expo-camera`, GPS con `expo-location`, vista previa con advertencia de nitidez y ubicación como coordenadas + mapa OpenStreetMap embebido vía WebView, sin depender de API key.
 - `ADR-05`: Sentry con saneamiento de datos personales, contexto de dispositivo/pantalla y captura de errores de la cola offline.
 - `ADR-06`: Expo Router con grupos por rol y guardias de sesión, rol y cambio de clave.
 - `ADR-07`: Sesión y cola en `SessionProvider`; avance y conteo se derivan de las actas devueltas por los repositorios.

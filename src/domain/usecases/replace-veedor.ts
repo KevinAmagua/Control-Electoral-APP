@@ -1,4 +1,4 @@
-import { failure, type Result } from '../../core/result/result';
+import { failure, ok, type Result } from '../../core/result/result';
 import type { Assignment } from '../election/assignment';
 import type { CreateUserInput, UserProfile } from '../user/profile';
 import type { AssignmentContextDependencies } from './assignment-context';
@@ -16,8 +16,13 @@ export type ReplaceVeedorInput = {
   reason: string;
 };
 
+export type ReplaceVeedorResult = {
+  assignments: Assignment[];
+  temporaryPassword: string | null;
+};
+
 export function createReplaceVeedorUseCase(dependencies: AssignmentContextDependencies) {
-  return async (input: ReplaceVeedorInput): Promise<Result<Assignment[]>> => {
+  return async (input: ReplaceVeedorInput): Promise<Result<ReplaceVeedorResult>> => {
     const contextResult = await loadContext(dependencies, input.actorId, input.mesaIds);
     if (!contextResult.ok) {
       return contextResult;
@@ -43,6 +48,7 @@ export function createReplaceVeedorUseCase(dependencies: AssignmentContextDepend
     }
 
     let nextVeedor: UserProfile | null = null;
+    let temporaryPassword: string | null = null;
     if (input.nextVeedorId) {
       const nextResult = await dependencies.users.getById(input.nextVeedorId);
       if (!nextResult.ok) {
@@ -59,7 +65,8 @@ export function createReplaceVeedorUseCase(dependencies: AssignmentContextDepend
       if (!created.ok) {
         return created;
       }
-      nextVeedor = created.value;
+      nextVeedor = created.value.profile;
+      temporaryPassword = created.value.temporaryPassword;
     } else {
       return failure('SUSTITUTO_REQUERIDO', 'Seleccione un veedor o registre uno nuevo');
     }
@@ -73,12 +80,17 @@ export function createReplaceVeedorUseCase(dependencies: AssignmentContextDepend
       return failure('VEEDOR_INVALIDO', 'El sustituto debe ser un veedor activo de su recinto');
     }
 
-    return dependencies.assignments.replace({
+    const replaced = await dependencies.assignments.replace({
       mesaIds: input.mesaIds,
       previousVeedorId: input.previousVeedorId,
       nextVeedorId: nextVeedor.id,
       reason: input.reason,
       assignedBy: actor.id,
     });
+    if (!replaced.ok) {
+      return replaced;
+    }
+
+    return ok({ assignments: replaced.value, temporaryPassword });
   };
 }

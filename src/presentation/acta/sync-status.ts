@@ -4,7 +4,7 @@ export type SyncStatus = 'en_proceso' | 'guardado_local' | 'enviado' | 'fallado'
 
 export const SYNC_STATUS_LABELS: Record<SyncStatus, string> = {
   en_proceso: 'En proceso',
-  guardado_local: 'Guardado local',
+  guardado_local: 'Guardado localmente · Pendiente',
   enviado: 'Enviado',
   fallado: 'Fallado',
 };

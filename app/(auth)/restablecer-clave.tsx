@@ -18,10 +18,20 @@ type Feedback = { status: FeedbackStatus; message: string } | null;
 
 export default function RestablecerClaveScreen() {
   const { status, role, mustChangePassword, emailVerified, resetPassword } = useSession();
-  const params = useLocalSearchParams<{ recovery?: string | string[] }>();
+  const params = useLocalSearchParams<{
+    recovery?: string | string[];
+    confirmed?: string | string[];
+  }>();
+  const wasConfirmed = (Array.isArray(params.confirmed)
+    ? params.confirmed[0]
+    : params.confirmed) === '1';
   const isRecoveryFlow =
-    (Array.isArray(params.recovery) ? params.recovery[0] : params.recovery) === '1';
-  const [feedback, setFeedback] = useState<Feedback>(null);
+    (Array.isArray(params.recovery) ? params.recovery[0] : params.recovery) === '1' || wasConfirmed;
+  const [feedback, setFeedback] = useState<Feedback>(() => (
+    wasConfirmed
+      ? { status: 'guardado', message: 'Correo confirmado correctamente. Ahora defina su contraseña.' }
+      : null
+  ));
   const { control, handleSubmit, trigger, formState: { errors, isSubmitting } } = useForm<
     ResetValues,
     unknown,

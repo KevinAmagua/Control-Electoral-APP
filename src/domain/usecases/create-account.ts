@@ -1,7 +1,7 @@
 import { failure, ok, type Result } from '../../core/result/result';
-import type { UserProfile, CreateUserInput } from '../user/profile';
+import type { CreateUserInput } from '../user/profile';
 import { canCreateRole } from '../user/permissions';
-import type { UserRepository } from '../repositories/user-repository';
+import type { CreatedUserResult, UserRepository } from '../repositories/user-repository';
 import { createUserSchema } from '../validation/user';
 import { formatValidationError } from '../validation/messages';
 
@@ -10,7 +10,7 @@ export type CreateAccountInput = CreateUserInput & {
 };
 
 export function createAccountUseCase(users: UserRepository) {
-  return async (input: CreateAccountInput): Promise<Result<UserProfile>> => {
+  return async (input: CreateAccountInput): Promise<Result<CreatedUserResult>> => {
     const actorResult = await users.getById(input.createdBy);
     if (!actorResult.ok) {
       return actorResult;
@@ -81,7 +81,10 @@ export function createAccountUseCase(users: UserRepository) {
       }
     }
 
-    const created = await users.create({ ...parsed.data, createdBy: actor.id });
+    const created = await users.createWithTemporaryPassword({
+      ...parsed.data,
+      createdBy: actor.id,
+    });
     if (!created.ok) {
       return created;
     }

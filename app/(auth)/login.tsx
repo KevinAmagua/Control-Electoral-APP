@@ -1,3 +1,4 @@
+import NetInfo from '@react-native-community/netinfo';
 import { zodResolver } from '@hookform/resolvers/zod';
 import LottieView from 'lottie-react-native';
 import { Link, router } from 'expo-router';
@@ -34,6 +35,23 @@ import {
 
 type LoginValues = z.input<typeof loginSchema>;
 type LoginResult = z.output<typeof loginSchema>;
+
+const OFFLINE_MESSAGE = 'Sin conexión a internet. Revise su red e intente de nuevo.';
+
+async function isOnline(): Promise<boolean> {
+  const state = await NetInfo.fetch();
+  return Boolean(state.isConnected) && state.isInternetReachable !== false;
+}
+
+function friendlyAuthError(error: { code: string; message: string }): string {
+  if (
+    error.code === 'SIN_CONEXION' ||
+    /failed to fetch|fetch failed|network request failed|networkerror/i.test(error.message)
+  ) {
+    return OFFLINE_MESSAGE;
+  }
+  return error.message;
+}
 
 export default function LoginScreen() {
   const { status, role, mustChangePassword, emailVerified, signIn, resendConfirmation } = useSession();
@@ -92,9 +110,14 @@ export default function LoginScreen() {
     setNeedsVerification(false);
     setConfirmationSent(false);
 
+    if (!(await isOnline())) {
+      setServerError(OFFLINE_MESSAGE);
+      return;
+    }
+
     const result = await signIn(values.email, values.password);
     if (!result.ok) {
-      setServerError(result.error.message);
+      setServerError(friendlyAuthError(result.error));
       setNeedsVerification(result.error.code === 'CORREO_NO_VERIFICADO');
       return;
     }
@@ -111,12 +134,17 @@ export default function LoginScreen() {
       return;
     }
 
+    if (!(await isOnline())) {
+      setServerError(OFFLINE_MESSAGE);
+      return;
+    }
+
     setIsResending(true);
     const result = await resendConfirmation(getValues('email').trim().toLowerCase());
     setIsResending(false);
 
     if (!result.ok) {
-      setServerError(result.error.message);
+      setServerError(friendlyAuthError(result.error));
       return;
     }
 

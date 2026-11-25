@@ -69,11 +69,17 @@ export default function ConfirmarCorreoScreen() {
       await refresh();
       setIsVerifying(false);
       if (!result.ok) {
-        setFeedback({ status: 'fallado', message: result.error.message });
+        setFeedback({
+          status: 'fallado',
+          message: `No se pudo confirmar el correo: ${result.error.message}`,
+        });
         return;
       }
       if (isRecoveryCallbackUrl(linkingUrl) || result.value.mustChangePassword) {
-        router.replace({ pathname: '/restablecer-clave', params: { recovery: '1' } });
+        router.replace({
+          pathname: '/restablecer-clave',
+          params: { recovery: '1', confirmed: '1' },
+        });
         return;
       }
       router.replace(getHomeRoute(result.value));
@@ -103,7 +109,7 @@ export default function ConfirmarCorreoScreen() {
 
     const values = getValues();
     if (!values.token) {
-      setError('token', { type: 'manual', message: 'Ingrese el código de 6 dígitos' });
+      setError('token', { type: 'manual', message: 'Ingrese el código de 8 dígitos' });
       return;
     }
 
@@ -113,14 +119,18 @@ export default function ConfirmarCorreoScreen() {
     setIsVerifying(false);
 
     if (!result.ok) {
-      setFeedback({ status: 'fallado', message: result.error.message });
+      setFeedback({
+        status: 'fallado',
+        message: `No se pudo confirmar el correo: ${result.error.message}`,
+      });
       return;
     }
 
-    setFeedback({ status: 'guardado', message: 'Correo verificado correctamente' });
-    router.replace(
-      result.value.mustChangePassword ? '/restablecer-clave' : getHomeRoute(result.value),
-    );
+    setFeedback({ status: 'guardado', message: 'Correo confirmado correctamente' });
+    router.replace({
+      pathname: '/restablecer-clave',
+      params: { recovery: '1', confirmed: '1' },
+    });
   };
 
   return (
@@ -150,12 +160,12 @@ export default function ConfirmarCorreoScreen() {
             <LargeTextInput
               label="Código de verificación"
               value={field.value}
-              onChangeText={(value) => field.onChange(value.replace(/\D/g, '').slice(0, 6))}
+              onChangeText={(value) => field.onChange(value.replace(/\D/g, '').slice(0, 8))}
               onBlur={field.onBlur}
               keyboardType="number-pad"
-              maxLength={6}
-              placeholder="123456"
-              hint="Ingrese el código de 6 dígitos enviado en el correo"
+              maxLength={8}
+              placeholder="12345678"
+              hint="Ingrese el código de 8 dígitos enviado en el correo"
               error={errors.token?.message ?? null}
             />
           )}

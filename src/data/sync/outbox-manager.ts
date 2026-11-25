@@ -93,7 +93,7 @@ export function createOutboxManager(actas: ActaRepository) {
   let unsubscribe: (() => void) | null = null;
   let retryTimer: ReturnType<typeof setInterval> | null = null;
   let startCount = 0;
-  let isFlushing = false;
+  let activeFlush: Promise<Result<number>> | null = null;
 
   function notify(): void {
     notifyOutboxListeners();
@@ -145,14 +145,13 @@ export function createOutboxManager(actas: ActaRepository) {
   }
 
   async function flushPending(): Promise<Result<number>> {
-    if (isFlushing) {
-      return ok(0);
+    if (activeFlush) {
+      return activeFlush;
     }
 
-    isFlushing = true;
-
-    try {
-      await initializeLocalDatabase();
+    const flush = (async (): Promise<Result<number>> => {
+      try {
+        await initializeLocalDatabase();
       const network = await NetInfo.fetch();
       if (!network.isConnected) {
         return ok(0);
@@ -273,8 +272,17 @@ export function createOutboxManager(actas: ActaRepository) {
       captureError(error, { scope: 'outbox.flush' });
       return failure('ERROR_SINCRONIZACION', 'No fue posible completar la sincronización');
     } finally {
-      isFlushing = false;
       notify();
+    }
+    })();
+
+    activeFlush = flush;
+    try {
+      return await flush;
+    } finally {
+      if (activeFlush === flush) {
+        activeFlush = null;
+      }
     }
   }
 

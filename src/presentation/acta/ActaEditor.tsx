@@ -47,7 +47,7 @@ import {
 import { listCandidateOptions, type CandidateOption } from './candidates';
 import { listLocalActaOperations } from './outbox-status';
 import { useActorProfile } from './session-actor';
-import { InfoRow, OptionButton, SectionTitle, StatusChip } from './ui';
+import { InfoRow, OptionButton, SectionTitle, StatusChip, type DisplayStatus } from './ui';
 import { useOutboxSync } from './useOutboxSync';
 
 type ActaEditorProps = {
@@ -187,6 +187,7 @@ export function ActaEditor({
   const [feedback, setFeedback] = useState<Feedback | null>(null);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [editorStatus, setEditorStatus] = useState<DisplayStatus>('en_proceso');
   const [operationId, setOperationId] = useState(createUuid);
   const [localActaId, setLocalActaId] = useState(createUuid);
   const [expectedVersion, setExpectedVersion] = useState(0);
@@ -233,6 +234,7 @@ export function ActaEditor({
       setPendingOperationId(null);
       setEvidence(null);
       setSaved(false);
+      setEditorStatus('en_proceso');
     });
   }, [reset]);
 
@@ -364,6 +366,11 @@ export function ActaEditor({
           localOperation && (localOperation.status === 'pendiente' || localOperation.status === 'en_proceso')
             ? localOperation.operationId
             : null,
+        );
+        setEditorStatus(
+          localOperation?.status === 'pendiente' || localOperation?.status === 'en_proceso'
+            ? 'pendiente'
+            : 'en_proceso',
         );
         setEvidence(
           editableLocalActa
@@ -504,34 +511,41 @@ export function ActaEditor({
         });
 
         if (!queued.ok) {
+          setEditorStatus('fallado');
           setFeedback({ status: 'fallado', message: queued.error.message });
           return;
         }
 
         setSaved(true);
+        setEditorStatus('guardado_local');
         setFeedback({
           status: 'guardado_local',
-          message: 'Guardado local. Sincronización pendiente.',
+          message: 'Guardado localmente. Pendiente hasta que se recupere la conexión.',
         });
         const synced = await flush();
         const localOperations = await listLocalActaOperations();
         const ownOperation = localOperations.ok
           ? localOperations.value.find((operation) => operation.operationId === queued.value)
           : null;
-        const sentToServer =
-          ownOperation?.status === 'guardado' || (!localOperations.ok && synced.ok && synced.value > 0);
+        const sentToServer = ownOperation?.status === 'guardado';
+        const detail = !synced.ok
+          ? synced.error.message
+          : !localOperations.ok
+            ? localOperations.error.message
+            : null;
 
         if (sentToServer) {
+          setEditorStatus('enviado');
           setFeedback({ status: 'enviado', message: 'Enviado.' });
         } else {
-          const detail = !synced.ok ? `. ${synced.error.message}` : '';
           setFeedback({
             status: 'guardado_local',
-            message: `Guardado local. Sincronización pendiente${detail}`,
+            message: `Guardado localmente. Pendiente hasta que se recupere la conexión${detail ? `. ${detail}` : ''}`,
           });
         }
       } catch (error) {
         captureError(error, { scope: 'acta.save' });
+        setEditorStatus('fallado');
         setFeedback({
           status: 'fallado',
           message: error instanceof Error ? error.message : 'No fue posible registrar el acta.',
@@ -581,7 +595,7 @@ export function ActaEditor({
     { label: 'Dignidad', complete: Boolean(dignidad) },
     { label: 'Evidencia', complete: Boolean(evidence) },
     { label: 'Conteo', complete: isValid },
-    { label: 'Guardado', complete: saved },
+    { label: saved ? 'Guardado' : 'En proceso', complete: saved },
   ];
   const completedSteps = progressSteps.filter((step) => step.complete).length;
 
@@ -609,7 +623,7 @@ export function ActaEditor({
       {offlineMode ? (
         <StatusFeedback
           status="guardado_local"
-          message="Modo offline: usando datos locales guardados. El acta quedará en la cola de sincronización."
+          message="Sin conexión: el acta quedará guardada localmente y pendiente hasta que se recupere la conexión."
         />
       ) : null}
       {syncError ? (
@@ -655,6 +669,7 @@ export function ActaEditor({
             label="Electores"
             value={<Text style={styles.value}>{mesa.registeredVoters}</Text>}
           />
+          <InfoRow label="Estado actual" value={<StatusChip status={editorStatus} />} />
           <InfoRow
             label="Estado previo"
             value={<StatusChip status={existingActa?.estado ?? null} />}

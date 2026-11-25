@@ -31,7 +31,7 @@ const animations: Record<FeedbackStatus, AnimationObject> = {
 const labels: Record<FeedbackStatus, string> = {
   ...ACTA_STATUS_LABELS,
   validacion: 'Revise los datos',
-  guardado_local: 'Guardado',
+  guardado_local: 'Guardado localmente · Pendiente',
   enviado: 'Enviado',
 };
 

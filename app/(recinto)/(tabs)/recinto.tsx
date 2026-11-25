@@ -67,14 +67,11 @@ export default function RecintoScreen() {
       try {
         const recintoId = profile?.recintoId as string;
         const { territory, assignments, users, actas } = dataContainer.repositories;
-        const [recintoResult, mesasResult, usersResult, actasResult, conflictsResult] =
-          await Promise.all([
-            territory.getRecinto(recintoId),
-            territory.listMesas(recintoId),
-            users.listByRecinto(recintoId),
-            actas.listByRecinto(recintoId),
-            actas.listConflicts(recintoId),
-          ]);
+        const recintoResult = await territory.getRecinto(recintoId);
+        const mesasResult = await territory.listMesas(recintoId);
+        const usersResult = await users.listByRecinto(recintoId);
+        const actasResult = await actas.listByRecinto(recintoId);
+        const conflictsResult = await actas.listConflicts(recintoId);
 
         if (!recintoResult.ok) throw new Error(recintoResult.error.message);
         if (!mesasResult.ok) throw new Error(mesasResult.error.message);
@@ -82,9 +79,12 @@ export default function RecintoScreen() {
         if (!actasResult.ok) throw new Error(actasResult.error.message);
         if (!conflictsResult.ok) throw new Error(conflictsResult.error.message);
 
-        const assignmentResults = await Promise.all(
-          mesasResult.value.map((mesa) => assignments.getActiveByMesa(mesa.id)),
-        );
+        const assignmentResults: Awaited<
+          ReturnType<typeof assignments.getActiveByMesa>
+        >[] = [];
+        for (const mesa of mesasResult.value) {
+          assignmentResults.push(await assignments.getActiveByMesa(mesa.id));
+        }
         await cacheReferenceData([
           { key: `recinto:${recintoId}`, value: recintoResult.value },
           ...mesasResult.value.map((mesa) => ({ key: `mesa:${mesa.id}`, value: mesa })),
@@ -160,16 +160,9 @@ export default function RecintoScreen() {
       <View style={styles.actionCard}>
         <SectionTitle
           title="Acciones del recinto"
-          subtitle="Registre una mesa, cree veedores o vuelva a consultar los datos."
+          subtitle="Cree veedores, revise conflictos o vuelva a consultar los datos."
         />
         <View style={styles.actions}>
-          <PrimaryButton
-            compact
-            label="Nueva mesa"
-            onPress={() => router.push('/nueva-mesa')}
-            disabled={loading}
-            tone="accent"
-          />
           <PrimaryButton
             compact
             label="Crear veedor"

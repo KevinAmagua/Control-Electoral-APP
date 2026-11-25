@@ -8,7 +8,7 @@ import { ActaCorrectionForm } from '@/presentation/acta/ActaCorrectionForm';
 import { ActaReviewList } from '@/presentation/acta/ActaReview';
 import { listAllCandidateOptions, type CandidateOption } from '@/presentation/acta/candidates';
 import { useActorProfile } from '@/presentation/acta/session-actor';
-import { Screen, StatusFeedback } from '@/presentation/components';
+import { Screen, StatusFeedback, type FeedbackStatus } from '@/presentation/components';
 
 export default function RevisionActaScreen() {
   const { actorId, profile, isLoading: isActorLoading, error: actorError } = useActorProfile();
@@ -19,7 +19,10 @@ export default function RevisionActaScreen() {
   const [candidateOptions, setCandidateOptions] = useState<CandidateOption[]>([]);
   const [candidateNames, setCandidateNames] = useState<Record<string, string>>({});
   const [selectedActa, setSelectedActa] = useState<Acta | null>(null);
-  const [correctionMessage, setCorrectionMessage] = useState<string | null>(null);
+  const [correctionFeedback, setCorrectionFeedback] = useState<{
+    status: FeedbackStatus;
+    message: string;
+  } | null>(null);
   const [reloadToken, setReloadToken] = useState(0);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -51,12 +54,10 @@ export default function RevisionActaScreen() {
       try {
         const recintoId = profile?.recintoId as string;
         const { territory, actas: actasRepository } = dataContainer.repositories;
-        const [recintoResult, mesasResult, actasResult, candidatesResult] = await Promise.all([
-          territory.getRecinto(recintoId),
-          territory.listMesas(recintoId),
-          actasRepository.listByRecinto(recintoId),
-          listAllCandidateOptions(),
-        ]);
+        const recintoResult = await territory.getRecinto(recintoId);
+        const mesasResult = await territory.listMesas(recintoId);
+        const actasResult = await actasRepository.listByRecinto(recintoId);
+        const candidatesResult = await listAllCandidateOptions();
         if (!recintoResult.ok) throw new Error(recintoResult.error.message);
         if (!mesasResult.ok) throw new Error(mesasResult.error.message);
         if (!actasResult.ok) throw new Error(actasResult.error.message);
@@ -114,17 +115,16 @@ export default function RevisionActaScreen() {
           }
         />
       )}
-      {correctionMessage ? (
-        <StatusFeedback status="guardado" message={correctionMessage} />
+      {correctionFeedback ? (
+        <StatusFeedback status={correctionFeedback.status} message={correctionFeedback.message} />
       ) : null}
       {selectedActa && actorId ? (
         <ActaCorrectionForm
           acta={selectedActa}
-          actorId={actorId}
           candidates={candidateOptions}
           onCancel={() => setSelectedActa(null)}
-          onDone={() => {
-            setCorrectionMessage('Corrección guardada. El acta se actualizó a una nueva versión.');
+          onDone={(message, status) => {
+            setCorrectionFeedback({ message, status });
             setSelectedActa(null);
             setReloadToken((value) => value + 1);
           }}
@@ -136,7 +136,7 @@ export default function RevisionActaScreen() {
         recintosById={recintosById}
         candidateNames={candidateNames}
         onCorrect={(acta) => {
-          setCorrectionMessage(null);
+          setCorrectionFeedback(null);
           setSelectedActa(acta);
         }}
       />

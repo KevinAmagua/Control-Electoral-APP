@@ -28,7 +28,6 @@ Aplicación móvil Expo/React Native para coordinadores y veedores electorales. 
    EXPO_PUBLIC_SENTRY_DSN=
    EXPO_PUBLIC_SENTRY_ORG=
    EXPO_PUBLIC_SENTRY_PROJECT=
-   EXPO_PUBLIC_GOOGLE_MAPS_API_KEY=
    ```
 
 3. En Supabase → Auth → URL Configuration → Redirect URLs, agregar:
@@ -68,7 +67,7 @@ Aplicación móvil Expo/React Native para coordinadores y veedores electorales. 
    npx expo start
    ```
 
-> `expo-maps` solo funciona en Android e iOS y requiere un development build o APK/EAS build. La vista web muestra coordenadas como respaldo.
+> La revisión de actas muestra las coordenadas y un mapa OpenStreetMap embebido con `react-native-webview`; no requiere API key de Google Maps ni mapa nativo.
 
 ## Comandos
 
@@ -94,7 +93,7 @@ eas update
 ## Flujo de autenticación
 
 - El coordinador provincial crea coordinadores de recinto; el coordinador de recinto crea y reasigna veedores.
-- Todas las cuentas demo, incluidas `jonyalexander2003@gmail.com` y `alexade2003v@gmail.com`, usan la clave temporal `Adn2026!` y deben cambiarla en el primer acceso.
+- Todas las cuentas demo usan la clave temporal `Adn2026!` y deben cambiarla en el primer acceso.
 - Para probar RF-06 existe un segundo coordinador provincial en el seed: `coordinador.guayas@adn.ec` (Guayas/Guayaquil); los recintos `GYE-001` y `GYE-002` permiten verificar el aislamiento entre jurisdicciones.
 - La creación de cuentas se hace desde la Edge Function `create-user`; la clave temporal se entrega en la respuesta y el correo de invitación lo envía Supabase con SMTP propio.
 - El primer acceso con clave temporal obliga a cambiarla en `app/(auth)/cambiar-clave.tsx` o `app/(auth)/restablecer-clave.tsx`, según el enlace recibido.

@@ -70,10 +70,8 @@ export default function ConflictosScreen() {
       try {
         const recintoId = profile?.recintoId as string;
         const { territory, actas } = dataContainer.repositories;
-        const [mesasResult, conflictsResult] = await Promise.all([
-          territory.listMesas(recintoId),
-          actas.listConflicts(recintoId),
-        ]);
+        const mesasResult = await territory.listMesas(recintoId);
+        const conflictsResult = await actas.listConflicts(recintoId);
         if (!mesasResult.ok) throw new Error(mesasResult.error.message);
         if (!conflictsResult.ok) throw new Error(conflictsResult.error.message);
 
@@ -155,7 +153,7 @@ export default function ConflictosScreen() {
     if (!conflict.remote) {
       setFeedback({
         status: 'guardado_local',
-        message: 'Conflicto local en espera. Sincronice para enviarlo al servidor.',
+        message: 'Conflicto guardado localmente y pendiente hasta que se recupere la conexión.',
       });
       return;
     }

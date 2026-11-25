@@ -62,10 +62,8 @@ export async function listCandidateOptions(
 }
 
 export async function listAllCandidateOptions(): Promise<Result<CandidateOption[]>> {
-  const [alcaldia, prefectura] = await Promise.all([
-    listCandidateOptions('alcaldia'),
-    listCandidateOptions('prefectura'),
-  ]);
+  const alcaldia = await listCandidateOptions('alcaldia');
+  const prefectura = await listCandidateOptions('prefectura');
 
   if (!alcaldia.ok) {
     return alcaldia;

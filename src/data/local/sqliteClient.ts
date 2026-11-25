@@ -237,7 +237,18 @@ const MIGRATIONS: readonly string[] = [
 ];
 
 let databasePromise: Promise<SQLiteDatabase> | null = null;
+let initializationPromise: Promise<SQLiteDatabase> | null = null;
 let sqliteModulePromise: Promise<typeof import('expo-sqlite')> | null = null;
+let transactionQueue: Promise<void> = Promise.resolve();
+
+function runInTransaction(
+  database: SQLiteDatabase,
+  task: () => Promise<void>,
+): Promise<void> {
+  const result = transactionQueue.then(() => database.withTransactionAsync(task));
+  transactionQueue = result.catch(() => undefined);
+  return result;
+}
 
 function loadSqliteModule(): Promise<typeof import('expo-sqlite')> {
   if (!sqliteModulePromise) {
@@ -310,39 +321,44 @@ export async function closeLocalDatabase(): Promise<void> {
     return;
   }
 
+  await initializationPromise?.catch(() => undefined);
+  await transactionQueue.catch(() => undefined);
   const database = await databasePromise;
   await database.closeAsync();
   databasePromise = null;
+  initializationPromise = null;
 }
 
 async function requeueStaleOperationsInDatabase(database: SQLiteDatabase): Promise<void> {
-  const cutoff = new Date(Date.now() - STALE_OPERATION_TIMEOUT_MS).toISOString();
-  const now = nowIso();
-  const stale = await database.getAllAsync<{ operation_id: string }>(
-    `SELECT operation_id FROM outbox WHERE status = 'en_proceso' AND updated_at < ?`,
-    cutoff,
-  );
+  await runInTransaction(database, async () => {
+    const cutoff = new Date(Date.now() - STALE_OPERATION_TIMEOUT_MS).toISOString();
+    const now = nowIso();
+    const stale = await database.getAllAsync<{ operation_id: string }>(
+      `SELECT operation_id FROM outbox WHERE status = 'en_proceso' AND updated_at < ?`,
+      cutoff,
+    );
 
-  if (stale.length === 0) {
-    return;
-  }
+    if (stale.length === 0) {
+      return;
+    }
 
-  const placeholders = stale.map(() => '?').join(', ');
-  const operationIds = stale.map((row) => row.operation_id);
+    const placeholders = stale.map(() => '?').join(', ');
+    const operationIds = stale.map((row) => row.operation_id);
 
-  await database.runAsync(
-    `UPDATE outbox
-     SET status = 'pendiente', updated_at = ?, last_error = COALESCE(last_error, 'Reanudado tras reinicio')
-     WHERE status = 'en_proceso' AND updated_at < ?`,
-    now,
-    cutoff,
-  );
-  await database.runAsync(
-    `UPDATE actas_local SET estado = 'en_proceso', actualizado_en = ?
-     WHERE operation_id IN (${placeholders})`,
-    now,
-    ...operationIds,
-  );
+    await database.runAsync(
+      `UPDATE outbox
+       SET status = 'pendiente', updated_at = ?, last_error = COALESCE(last_error, 'Reanudado tras reinicio')
+       WHERE status = 'en_proceso' AND updated_at < ?`,
+      now,
+      cutoff,
+    );
+    await database.runAsync(
+      `UPDATE actas_local SET estado = 'en_proceso', actualizado_en = ?
+       WHERE operation_id IN (${placeholders})`,
+      now,
+      ...operationIds,
+    );
+  });
 }
 
 export async function requeueStaleOperations(): Promise<void> {
@@ -351,23 +367,32 @@ export async function requeueStaleOperations(): Promise<void> {
 }
 
 export async function initializeLocalDatabase(): Promise<SQLiteDatabase> {
-  const database = await openLocalDatabase();
-  const versionRow = await database.getFirstAsync<{ user_version: number }>(
-    'PRAGMA user_version',
-  );
-  const currentVersion = versionRow?.user_version ?? 0;
+  if (!initializationPromise) {
+    initializationPromise = (async () => {
+      const database = await openLocalDatabase();
+      const versionRow = await database.getFirstAsync<{ user_version: number }>(
+        'PRAGMA user_version',
+      );
+      const currentVersion = versionRow?.user_version ?? 0;
 
-  if (currentVersion < DATABASE_VERSION) {
-    await database.withTransactionAsync(async () => {
-      for (let index = currentVersion; index < MIGRATIONS.length; index += 1) {
-        await database.execAsync(MIGRATIONS[index]);
+      if (currentVersion < DATABASE_VERSION) {
+        await runInTransaction(database, async () => {
+          for (let index = currentVersion; index < MIGRATIONS.length; index += 1) {
+            await database.execAsync(MIGRATIONS[index]);
+          }
+          await database.execAsync(`PRAGMA user_version = ${DATABASE_VERSION}`);
+        });
       }
-      await database.execAsync(`PRAGMA user_version = ${DATABASE_VERSION}`);
+
+      await requeueStaleOperationsInDatabase(database);
+      return database;
+    })().catch((error: unknown) => {
+      initializationPromise = null;
+      throw error;
     });
   }
 
-  await requeueStaleOperationsInDatabase(database);
-  return database;
+  return initializationPromise;
 }
 
 function validateActaInput(input: SaveActaOfflineInput): void {
@@ -428,7 +453,7 @@ async function insertConflictInTransaction(
 
 export async function recordActaConflict(input: ActaConflictInput): Promise<void> {
   const database = await initializeLocalDatabase();
-  await database.withTransactionAsync(async () => {
+  await runInTransaction(database, async () => {
     await insertConflictInTransaction(database, input);
   });
 }
@@ -443,7 +468,7 @@ export async function saveActaOffline(input: SaveActaOfflineInput): Promise<stri
   let savedOperationId = operationId;
   const state: { conflict: ActaConflictInput | null } = { conflict: null };
 
-  await database.withTransactionAsync(async () => {
+  await runInTransaction(database, async () => {
     const existing = await database.getFirstAsync<{ operation_id: string }>(
       'SELECT operation_id FROM outbox WHERE operation_id = ?',
       operationId,
@@ -658,12 +683,14 @@ export async function updateOutboxPayload(
   payload: SaveActaOfflineInput,
 ): Promise<void> {
   const database = await initializeLocalDatabase();
-  await database.runAsync(
-    'UPDATE outbox SET payload = ?, updated_at = ? WHERE operation_id = ?',
-    JSON.stringify(payload),
-    nowIso(),
-    operationId,
-  );
+  await runInTransaction(database, async () => {
+    await database.runAsync(
+      'UPDATE outbox SET payload = ?, updated_at = ? WHERE operation_id = ?',
+      JSON.stringify(payload),
+      nowIso(),
+      operationId,
+    );
+  });
 }
 
 export async function claimPendingOperations(limit = 5): Promise<OutboxOperation[]> {
@@ -671,7 +698,7 @@ export async function claimPendingOperations(limit = 5): Promise<OutboxOperation
   const now = nowIso();
   let operations: OutboxOperation[] = [];
 
-  await database.withTransactionAsync(async () => {
+  await runInTransaction(database, async () => {
     const rows = await database.getAllAsync<{
       id: string;
       operation_id: string;
@@ -745,7 +772,7 @@ export async function markOutboxOperation(
   const actaStatus: ActaStatus =
     status === 'guardado' ? 'guardado' : status === 'fallado' ? 'fallado' : 'en_proceso';
 
-  await database.withTransactionAsync(async () => {
+  await runInTransaction(database, async () => {
     const outbox = await database.getFirstAsync<{ id: string }>(
       'SELECT id FROM outbox WHERE operation_id = ?',
       operationId,
@@ -873,11 +900,13 @@ export async function listUnsyncedLocalConflicts(): Promise<LocalActaConflict[]>
 
 export async function markLocalConflictSynced(conflictId: string): Promise<void> {
   const database = await initializeLocalDatabase();
-  await database.runAsync(
-    'UPDATE conflictos_edicion_local SET synced_at = ? WHERE id = ?',
-    nowIso(),
-    conflictId,
-  );
+  await runInTransaction(database, async () => {
+    await database.runAsync(
+      'UPDATE conflictos_edicion_local SET synced_at = ? WHERE id = ?',
+      nowIso(),
+      conflictId,
+    );
+  });
 }
 
 async function getCacheKeyPrefix(): Promise<string> {
@@ -899,7 +928,7 @@ async function cacheReferenceDataWithPrefix(
 
   const database = await initializeLocalDatabase();
   const now = nowIso();
-  await database.withTransactionAsync(async () => {
+  await runInTransaction(database, async () => {
     for (const entry of entries) {
       await database.runAsync(
         `INSERT INTO reference_cache (key, value, updated_at)

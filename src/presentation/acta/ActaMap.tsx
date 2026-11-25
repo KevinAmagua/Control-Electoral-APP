@@ -1,110 +1,31 @@
-import { AppleMaps, GoogleMaps, type CameraPosition, type Coordinates } from 'expo-maps';
-import { Platform, StyleSheet } from 'react-native';
+import { StyleSheet, Text, View } from 'react-native';
 
-import { palette, radius } from '@/core/theme';
+import { palette, radius, spacing, typography } from '@/core/theme';
 
 export type ActaMapProps = {
   actaLat: number;
   actaLng: number;
-  recintoLat: number;
-  recintoLng: number;
-  radiusMeters: number;
-  outsideRadius: boolean;
-  actaLabel: string;
-  recintoLabel: string;
 };
 
-export function ActaMap({
-  actaLat,
-  actaLng,
-  recintoLat,
-  recintoLng,
-  radiusMeters,
-  outsideRadius,
-  actaLabel,
-  recintoLabel,
-}: ActaMapProps) {
-  const actaCoordinates: Coordinates = { latitude: actaLat, longitude: actaLng };
-  const recintoCoordinates: Coordinates = { latitude: recintoLat, longitude: recintoLng };
-  const cameraPosition: CameraPosition = { coordinates: actaCoordinates, zoom: 15 };
-  const actaTone = outsideRadius ? palette.danger : palette.success;
-
-  if (Platform.OS === 'ios') {
-    const markers: AppleMaps.Marker[] = [
-      {
-        id: 'acta',
-        coordinates: actaCoordinates,
-        title: actaLabel,
-        tintColor: actaTone,
-      },
-      {
-        id: 'recinto',
-        coordinates: recintoCoordinates,
-        title: recintoLabel,
-        tintColor: palette.primary,
-      },
-    ];
-    const circles: AppleMaps.Circle[] = [
-      {
-        id: 'radio-recinto',
-        center: recintoCoordinates,
-        radius: radiusMeters,
-        color: palette.mapOverlay,
-        lineColor: palette.primary,
-        lineWidth: 2,
-      },
-    ];
-
-    return (
-      <AppleMaps.View
-        style={styles.map}
-        cameraPosition={cameraPosition}
-        markers={markers}
-        circles={circles}
-      />
-    );
-  }
-
-  const markers: GoogleMaps.Marker[] = [
-    {
-      id: 'acta',
-      coordinates: actaCoordinates,
-      title: actaLabel,
-      snippet: outsideRadius ? 'Fuera del radio permitido' : 'Dentro del radio permitido',
-      showCallout: true,
-    },
-    {
-      id: 'recinto',
-      coordinates: recintoCoordinates,
-      title: recintoLabel,
-      showCallout: true,
-    },
-  ];
-  const circles: GoogleMaps.Circle[] = [
-    {
-      id: 'radio-recinto',
-      center: recintoCoordinates,
-      radius: radiusMeters,
-      color: palette.mapOverlay,
-      lineColor: palette.primary,
-      lineWidth: 2,
-    },
-  ];
-
+export function ActaMap({ actaLat, actaLng }: ActaMapProps) {
   return (
-    <GoogleMaps.View
-      style={styles.map}
-      cameraPosition={cameraPosition}
-      markers={markers}
-      circles={circles}
-    />
+    <View style={styles.fallback}>
+      <Text style={styles.message}>El mapa integrado está disponible en la aplicación móvil.</Text>
+      <Text style={styles.message}>
+        Acta: {actaLat.toFixed(6)}, {actaLng.toFixed(6)}
+      </Text>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  map: {
-    height: 220,
+  fallback: {
+    padding: spacing.md,
     borderRadius: radius.md,
-    overflow: 'hidden',
+    backgroundColor: palette.background,
+  },
+  message: {
+    color: palette.textMuted,
+    fontSize: typography.caption,
   },
 });

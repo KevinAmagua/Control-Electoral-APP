@@ -2,7 +2,8 @@ import { useMemo, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 
 import { palette, spacing } from '@/core/theme';
-import { dataContainer } from '@/data/container';
+import { captureError } from '@/data/monitoring/sentry';
+import { queueActaForSync } from '@/data/sync/outbox-manager';
 import type { Acta, ActaDraft, VoteDetail } from '@/domain/acta/acta';
 import { DIGNITY_LABELS } from '@/domain/election/dignity';
 import {
@@ -18,13 +19,14 @@ import {
   type FeedbackStatus,
 } from '@/presentation/components';
 
+import { listLocalActaOperations } from './outbox-status';
+import { useOutboxSync } from './useOutboxSync';
 import { InfoRow, SectionTitle } from './ui';
 
 type ActaCorrectionFormProps = {
   acta: Acta;
-  actorId: string;
   candidates: readonly CandidateOption[];
-  onDone: () => void;
+  onDone: (message: string, status: FeedbackStatus) => void;
   onCancel: () => void;
 };
 
@@ -53,7 +55,6 @@ function initialVotes(acta: Acta, candidates: readonly CandidateOption[]): Recor
 
 export function ActaCorrectionForm({
   acta,
-  actorId,
   candidates,
   onDone,
   onCancel,
@@ -66,6 +67,7 @@ export function ActaCorrectionForm({
   const [votes, setVotes] = useState<Record<string, string>>(() => initialVotes(acta, dignityCandidates));
   const [feedback, setFeedback] = useState<Feedback | null>(null);
   const [saving, setSaving] = useState(false);
+  const { flush } = useOutboxSync();
 
   const formValidation = useMemo(
     () => actaFormSchema.safeParse({
@@ -92,6 +94,22 @@ export function ActaCorrectionForm({
   }, [formValidation]);
 
   async function handleSave() {
+    const localOperations = await listLocalActaOperations();
+    if (localOperations.ok) {
+      const hasPending = localOperations.value.some(
+        (operation) =>
+          operation.actaId === acta.id &&
+          (operation.status === 'pendiente' || operation.status === 'en_proceso'),
+      );
+      if (hasPending) {
+        setFeedback({
+          status: 'validacion',
+          message: 'Esta acta ya tiene una operación pendiente. Revise su estado antes de corregirla de nuevo.',
+        });
+        return;
+      }
+    }
+
     const votos: VoteDetail[] = dignityCandidates.map((candidate) => ({
       organizationId: candidate.organizationId,
       candidateId: candidate.id,
@@ -121,22 +139,63 @@ export function ActaCorrectionForm({
 
     setSaving(true);
     setFeedback({ status: 'en_proceso', message: 'Guardando corrección...' });
-    const result = await dataContainer.useCases.correctActa({
-      ...validation.value,
-      actorId,
-      actaId: acta.id,
-    });
-    setSaving(false);
+    try {
+      const queued = await queueActaForSync({
+        operationId: validation.value.operacionClienteId,
+        actaId: acta.id,
+        mesaId: validation.value.mesaId,
+        dignity: validation.value.dignidad,
+        expectedVersion: validation.value.expectedVersion,
+        totalSufragantes: validation.value.totalSufragantes,
+        votosValidos: validation.value.votosValidos,
+        votosBlancos: validation.value.votosBlancos,
+        votosNulos: validation.value.votosNulos,
+        gpsLat: validation.value.gpsLat,
+        gpsLng: validation.value.gpsLng,
+        gpsPrecision: validation.value.gpsPrecision,
+        fotoPath: validation.value.fotoPath,
+        observaciones: validation.value.observaciones,
+        votes: validation.value.votos,
+      });
 
-    if (!result.ok) {
-      setFeedback({ status: 'fallado', message: result.error.message });
-      return;
+      if (!queued.ok) {
+        setFeedback({ status: 'fallado', message: queued.error.message });
+        return;
+      }
+
+      const pendingMessage =
+        'Corrección guardada localmente. Pendiente hasta que se recupere la conexión.';
+      setFeedback({ status: 'guardado_local', message: pendingMessage });
+
+      const synced = await flush();
+      const updatedOperations = await listLocalActaOperations();
+      const ownOperation = updatedOperations.ok
+        ? updatedOperations.value.find((operation) => operation.operationId === queued.value)
+        : null;
+      const sentToServer = ownOperation?.status === 'guardado';
+      const detail = !synced.ok
+        ? synced.error.message
+        : !updatedOperations.ok
+          ? updatedOperations.error.message
+          : null;
+      const finalFeedback: Feedback = sentToServer
+        ? { status: 'enviado', message: 'Corrección enviada.' }
+        : {
+            status: 'guardado_local',
+            message: `${pendingMessage}${detail ? `. ${detail}` : ''}`,
+          };
+
+      setFeedback(finalFeedback);
+      onDone(finalFeedback.message, finalFeedback.status);
+    } catch (error) {
+      captureError(error, { scope: 'acta.correction' });
+      setFeedback({
+        status: 'fallado',
+        message: error instanceof Error ? error.message : 'No fue posible guardar la corrección.',
+      });
+    } finally {
+      setSaving(false);
     }
-    setFeedback({
-      status: 'guardado',
-      message: `Acta corregida a la versión ${result.value.version}`,
-    });
-    onDone();
   }
 
   return (

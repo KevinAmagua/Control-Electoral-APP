@@ -1,6 +1,10 @@
 import { failure, ok, type Result } from '@/core/result/result';
 import type { UserProfile } from '@/domain/user/profile';
-import type { UserRepository, CreateUserRecord } from '@/domain/repositories/user-repository';
+import type {
+  CreatedUserResult,
+  CreateUserRecord,
+  UserRepository,
+} from '@/domain/repositories/user-repository';
 
 import * as Linking from 'expo-linking';
 
@@ -9,14 +13,7 @@ import { supabase } from './client';
 import { toFailure } from './errors';
 import { mapProfile, type ProfileRow } from './mappers';
 
-export type CreatedUserResult = {
-  profile: UserProfile;
-  temporaryPassword: string | null;
-};
-
-export type SupabaseUserRepository = UserRepository & {
-  createWithTemporaryPassword(input: CreateUserRecord): Promise<Result<CreatedUserResult>>;
-};
+export type SupabaseUserRepository = UserRepository;
 
 type CreateUserResponse = {
   profile?: ProfileRow;

@@ -142,9 +142,12 @@ export default function NuevoVeedorScreen() {
         reportCreationError(replaced.error);
         return;
       }
+      const temporaryPassword = replaced.value.temporaryPassword
+        ? ` Contraseña temporal: ${replaced.value.temporaryPassword}`
+        : '';
       setFeedback({
         status: 'guardado',
-        message: `${replaced.value.length} mesa(s) reasignadas al nuevo veedor`,
+        message: `${replaced.value.assignments.length} mesa(s) reasignadas al nuevo veedor.${temporaryPassword}`,
       });
       reset({
         role: 'veedor',
@@ -171,7 +174,7 @@ export default function NuevoVeedorScreen() {
     if (mesaIds.length > 0) {
       const assigned = await dataContainer.useCases.assignVeedor({
         actorId,
-        veedorId: created.value.id,
+        veedorId: created.value.profile.id,
         mesaIds,
         reason: replacementReason,
       });
@@ -184,12 +187,13 @@ export default function NuevoVeedorScreen() {
       }
     }
 
-    setFeedback({
-      status: 'guardado',
-      message: mesaIds.length > 0
-        ? 'Veedor creado y asignado a las mesas seleccionadas'
-        : 'Veedor creado correctamente',
-    });
+    const baseMessage = mesaIds.length > 0
+      ? 'Veedor creado y asignado a las mesas seleccionadas'
+      : 'Veedor creado correctamente';
+    const temporaryPassword = created.value.temporaryPassword
+      ? ` Contraseña temporal: ${created.value.temporaryPassword}`
+      : ' La contraseña temporal no estuvo disponible; solicite el correo de invitación.';
+    setFeedback({ status: 'guardado', message: `${baseMessage}.${temporaryPassword}` });
     reset({
       role: 'veedor',
       cedula: '',

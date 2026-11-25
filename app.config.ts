@@ -2,7 +2,6 @@ import type { ConfigContext, ExpoConfig } from 'expo/config';
 
 const PRIMARY = '#9854B3';
 const ACCENT = '#FFEC4E';
-const GOOGLE_MAPS_API_KEY = process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY;
 const SENTRY_ORG = process.env.EXPO_PUBLIC_SENTRY_ORG || process.env.SENTRY_ORG;
 const SENTRY_PROJECT = process.env.EXPO_PUBLIC_SENTRY_PROJECT || process.env.SENTRY_PROJECT;
 const SENTRY_UPLOAD_CONFIGURED = Boolean(
@@ -46,11 +45,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   android: {
     ...config.android,
     package: 'ec.com.adn.controlectoral',
-    versionCode: 1,
-    config: {
-      ...config.android?.config,
-      googleMaps: GOOGLE_MAPS_API_KEY ? { apiKey: GOOGLE_MAPS_API_KEY } : undefined,
-    },
+    versionCode: 2,
     adaptiveIcon: {
       backgroundColor: PRIMARY,
       foregroundImage: './assets/images/android-icon-foreground.png',
@@ -75,7 +70,6 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     'expo-router',
     'expo-sqlite',
     ...(sentryPlugin ? [sentryPlugin] : []),
-    'expo-maps',
     [
       'expo-camera',
       {

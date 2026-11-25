@@ -1,5 +1,5 @@
-import { lazy, Suspense, useEffect, useState } from 'react';
-import { Image, Platform, StyleSheet, Text, View } from 'react-native';
+import { useEffect, useState } from 'react';
+import { Image, StyleSheet, Text, View } from 'react-native';
 
 import { palette, radius, spacing, typography } from '@/core/theme';
 import { getActaPhotoUri } from '@/data/remote/supabase/storage-repository';
@@ -9,13 +9,9 @@ import type { Mesa } from '@/domain/election/mesa';
 import type { Recinto } from '@/domain/election/recinto';
 import { PrimaryButton, StatusFeedback } from '@/presentation/components';
 
+import { ActaMap } from './ActaMap';
 import { distanceBetweenCoordinates, formatCoordinate, formatDateTime } from './geo';
 import { InfoRow, StatusChip } from './ui';
-
-const NativeActaMap =
-  Platform.OS === 'web'
-    ? null
-    : lazy(() => import('./ActaMap').then((module) => ({ default: module.ActaMap })));
 
 type ActaReviewCardProps = {
   acta: Acta;
@@ -33,6 +29,7 @@ export function ActaReviewCard({
   onCorrect,
 }: ActaReviewCardProps) {
   const [photo, setPhoto] = useState<{ path: string; uri: string | null } | null>(null);
+  const [isMapVisible, setIsMapVisible] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -74,9 +71,10 @@ export function ActaReviewCard({
   const hasCoordinates =
     Number.isFinite(acta.gpsLat) &&
     Number.isFinite(acta.gpsLng) &&
-    recinto !== undefined &&
-    Number.isFinite(recinto.gpsLat) &&
-    Number.isFinite(recinto.gpsLng);
+    acta.gpsLat >= -90 &&
+    acta.gpsLat <= 90 &&
+    acta.gpsLng >= -180 &&
+    acta.gpsLng <= 180;
 
   return (
     <View style={styles.card}>
@@ -96,41 +94,30 @@ export function ActaReviewCard({
         resizeMode="cover"
       />
 
-      {NativeActaMap && hasCoordinates && recinto ? (
-        <Suspense
-          fallback={
-            <View style={styles.mapFallback}>
-              <Text style={styles.subtitle}>Cargando mapa...</Text>
-            </View>
-          }>
-          <NativeActaMap
-            actaLat={acta.gpsLat}
-            actaLng={acta.gpsLng}
-            recintoLat={recinto.gpsLat}
-            recintoLng={recinto.gpsLng}
-            radiusMeters={radiusLimit}
-            outsideRadius={outsideRadius}
-            actaLabel={`Acta · ${formatCoordinate(acta.gpsLat)}, ${formatCoordinate(acta.gpsLng)}`}
-            recintoLabel={`Recinto ${recinto.name}`}
+      <View style={styles.mapFallback}>
+        <Text style={styles.subtitle}>Ubicación del acta</Text>
+        <Text style={styles.subtitle}>
+          Acta: {formatCoordinate(acta.gpsLat)}, {formatCoordinate(acta.gpsLng)}
+        </Text>
+        {recinto ? (
+          <Text style={styles.subtitle}>
+            Recinto: {formatCoordinate(recinto.gpsLat)}, {formatCoordinate(recinto.gpsLng)}
+          </Text>
+        ) : null}
+      </View>
+      {hasCoordinates ? (
+        <>
+          <PrimaryButton
+            compact
+            label={isMapVisible ? 'Ocultar mapa' : 'Mostrar mapa'}
+            tone="secondary"
+            onPress={() => setIsMapVisible((visible) => !visible)}
           />
-        </Suspense>
-      ) : (
-        <View style={styles.mapFallback}>
-          <Text style={styles.subtitle}>
-            {Platform.OS === 'web'
-              ? 'Mapa disponible solo en la aplicación móvil.'
-              : 'Coordenadas insuficientes para mostrar el mapa.'}
-          </Text>
-          <Text style={styles.subtitle}>
-            Acta: {formatCoordinate(acta.gpsLat)}, {formatCoordinate(acta.gpsLng)}
-          </Text>
-          {recinto ? (
-            <Text style={styles.subtitle}>
-              Recinto: {formatCoordinate(recinto.gpsLat)}, {formatCoordinate(recinto.gpsLng)}
-            </Text>
+          {isMapVisible ? (
+            <ActaMap actaLat={acta.gpsLat} actaLng={acta.gpsLng} />
           ) : null}
-        </View>
-      )}
+        </>
+      ) : null}
 
       {outsideRadius ? (
         <StatusFeedback

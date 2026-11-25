@@ -96,16 +96,15 @@ export default function AsignarVeedoresScreen() {
       try {
         const recintoId = profile?.recintoId as string;
         const { territory, assignments, users } = dataContainer.repositories;
-        const [mesasResult, usersResult] = await Promise.all([
-          territory.listMesas(recintoId),
-          users.listByRecinto(recintoId),
-        ]);
+        const mesasResult = await territory.listMesas(recintoId);
+        const usersResult = await users.listByRecinto(recintoId);
         if (!mesasResult.ok) throw new Error(mesasResult.error.message);
         if (!usersResult.ok) throw new Error(usersResult.error.message);
 
-        const activeResults = await Promise.all(
-          mesasResult.value.map((mesa) => assignments.getActiveByMesa(mesa.id)),
-        );
+        const activeResults: Awaited<ReturnType<typeof assignments.getActiveByMesa>>[] = [];
+        for (const mesa of mesasResult.value) {
+          activeResults.push(await assignments.getActiveByMesa(mesa.id));
+        }
         const usersById = new Map(usersResult.value.map((user) => [user.id, user]));
         const nextRows = mesasResult.value.map((mesa, index) => {
           const result = activeResults[index];
@@ -217,7 +216,7 @@ export default function AsignarVeedoresScreen() {
     }
     setFeedback({
       status: 'guardado',
-      message: `${result.value.length} reemplazos registrados correctamente.`,
+      message: `${result.value.assignments.length} reemplazos registrados correctamente.`,
     });
     reset({ mesaIds: [], veedorId: null, reason: '' });
     setReloadToken((value) => value + 1);
@@ -230,16 +229,9 @@ export default function AsignarVeedoresScreen() {
       <View style={styles.actionCard}>
         <SectionTitle
           title="Acciones rápidas"
-          subtitle="Registre una mesa, cree veedores o actualice la lista."
+          subtitle="Cree veedores o actualice la lista."
         />
         <View style={styles.actions}>
-          <PrimaryButton
-            compact
-            label="Nueva mesa"
-            onPress={() => router.push('/nueva-mesa')}
-            disabled={loading}
-            tone="accent"
-          />
           <PrimaryButton
             compact
             label="Crear veedor"

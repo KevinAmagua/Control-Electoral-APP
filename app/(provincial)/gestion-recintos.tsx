@@ -12,7 +12,7 @@ import type { UserProfile } from '@/domain/user/profile';
 import { fullName } from '@/domain/user/profile';
 import {
   isValidRecintoCode,
-  normalizeRecintoCode,
+  recintoCodePrefixForLocation,
   RECINTO_CODE_PREFIX,
 } from '@/domain/validation/territory';
 import { normalizeCedula } from '@/domain/validation/cedula';
@@ -38,7 +38,7 @@ export default function GestionRecintosScreen() {
   const [loading, setLoading] = useState(true);
   const [feedback, setFeedback] = useState<Feedback | null>(null);
   const [reloadToken, setReloadToken] = useState(0);
-  const [code, setCode] = useState(RECINTO_CODE_PREFIX);
+  const [codeDigits, setCodeDigits] = useState('');
   const [name, setName] = useState('');
   const [address, setAddress] = useState('');
   const [parish, setParish] = useState('');
@@ -74,6 +74,8 @@ export default function GestionRecintosScreen() {
   const selectedRecintoId = useWatch({ control, name: 'recintoId' });
   const selectedRecinto = recintos.find((recinto) => recinto.id === selectedRecintoId) ?? null;
   const recintoOcupado = Boolean(selectedRecinto?.coordinator);
+  const recintoCodePrefix = recintoCodePrefixForLocation(profile?.province, profile?.canton);
+  const code = codeDigits ? `${recintoCodePrefix}${codeDigits}` : recintoCodePrefix;
 
   const startLoading = useCallback(() => {
     void Promise.resolve().then(() => setLoading(true));
@@ -193,7 +195,7 @@ export default function GestionRecintosScreen() {
     }
 
     setFeedback({ status: 'guardado', message: `Recinto ${result.value.code} creado correctamente` });
-    setCode(RECINTO_CODE_PREFIX);
+    setCodeDigits('');
     setName('');
     setAddress('');
     setParish('');
@@ -292,7 +294,7 @@ export default function GestionRecintosScreen() {
     const assigned = await dataContainer.useCases.assignRecintoCoordinator({
       actorId,
       recintoId: values.recintoId,
-      coordinadorId: created.value.id,
+      coordinadorId: created.value.profile.id,
     });
 
     if (!assigned.ok) {
@@ -303,7 +305,13 @@ export default function GestionRecintosScreen() {
       return;
     }
 
-    setFeedback({ status: 'guardado', message: 'Coordinador creado y asignado correctamente' });
+    const temporaryPassword = created.value.temporaryPassword
+      ? ` Contraseña temporal: ${created.value.temporaryPassword}`
+      : ' La contraseña temporal no estuvo disponible; solicite el correo de invitación.';
+    setFeedback({
+      status: 'guardado',
+      message: `Coordinador creado y asignado correctamente.${temporaryPassword}`,
+    });
     reset({
       role: 'coordinador_recinto',
       cedula: '',
@@ -356,12 +364,12 @@ export default function GestionRecintosScreen() {
         tone="secondary"
       />
       <LargeTextInput
-        label="Código"
+        label={`Código (${recintoCodePrefix.slice(0, 3)})`}
         value={code}
-        onChangeText={(value) => setCode(normalizeRecintoCode(value))}
+        onChangeText={(value) => setCodeDigits(value.replace(/\D/g, '').slice(0, 3))}
         keyboardType="number-pad"
         maxLength={RECINTO_CODE_PREFIX.length + 3}
-        placeholder="QTO-001"
+        placeholder={`${recintoCodePrefix}001`}
       />
       <LargeTextInput label="Nombre" value={name} onChangeText={setName} />
       <LargeTextInput

@@ -7,6 +7,10 @@ const MESSAGE_OVERRIDES: readonly [string, string][] = [
   ['SIN_PERMISO_PARA_LA_MESA', 'No tiene permiso para registrar en esta mesa'],
   ['EL_USUARIO_ASIGNADO_DEBE_SER_VEEDOR', 'El usuario asignado debe ser veedor'],
   ['EL_REEMPLAZO_DEBE_SER_PARA_LA_MISMA_MESA', 'El reemplazo debe ser para la misma mesa'],
+  ['Failed to fetch', 'Sin conexión a internet. Revise su red e intente de nuevo.'],
+  ['fetch failed', 'Sin conexión a internet. Revise su red e intente de nuevo.'],
+  ['Network request failed', 'Sin conexión a internet. Revise su red e intente de nuevo.'],
+  ['NetworkError', 'Sin conexión a internet. Revise su red e intente de nuevo.'],
   ['Invalid login credentials', 'Correo o contraseña incorrectos'],
   ['Email not confirmed', 'Debe verificar su correo electrónico antes de ingresar'],
   ['same_password', 'La contraseña ya está establecida. Inicie sesión con la contraseña que acaba de guardar.'],
@@ -38,6 +42,14 @@ export function errorMessage(error: unknown): string {
 
 export function errorCode(error: unknown, fallback: string): string {
   const message = errorMessage(error);
+  if (
+    message.includes('Failed to fetch') ||
+    message.toLowerCase().includes('fetch failed') ||
+    message.includes('Network request failed') ||
+    message.includes('NetworkError')
+  ) {
+    return 'SIN_CONEXION';
+  }
   if (message.includes('CONFLICTO_EDICION_OFFLINE')) {
     return 'CONFLICTO_EDICION_OFFLINE';
   }

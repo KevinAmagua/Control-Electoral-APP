@@ -70,7 +70,7 @@ function getSyncSummary(
     return `${failedCount} actas necesitan atención. Revise el detalle de cada operación.`;
   }
   if (pendingCount > 0) {
-    return `${pendingCount} actas guardadas esperan sincronización.`;
+    return `${pendingCount} actas guardadas localmente y pendientes hasta que se recupere la conexión.`;
   }
   if (syncedOperations.length === 0) {
     return 'No hay actas guardadas.';
@@ -91,6 +91,7 @@ export default function EstadosActaScreen() {
   const [operations, setOperations] = useState<OperationView[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [partialData, setPartialData] = useState(false);
   const [reloadToken, setReloadToken] = useState(0);
 
   const finishLoading = useCallback(() => {
@@ -101,6 +102,7 @@ export default function EstadosActaScreen() {
     void Promise.resolve().then(() => {
       setLoading(true);
       setLoadError(null);
+      setPartialData(false);
     });
   }, []);
 
@@ -123,30 +125,30 @@ export default function EstadosActaScreen() {
           listLocalActaOperations(),
         ]);
 
-        if (!assignedResult.ok) {
-          throw new Error(assignedResult.error.message);
-        }
-        if (!mesasResult.ok) {
-          throw new Error(mesasResult.error.message);
-        }
         if (!localResult.ok) {
           throw new Error(localResult.error.message);
         }
 
-        const mesaIds = new Set(
-          assignedResult.value
-            .filter((assignment) => assignment.active && !assignment.unassignedAt)
-            .map((assignment) => assignment.mesaId),
-        );
-        const numbersById = new Map(mesasResult.value.map((mesa) => [mesa.id, mesa.number]));
+        const missingReferenceData = !assignedResult.ok || !mesasResult.ok;
+        const mesaIds = assignedResult.ok
+          ? new Set(
+              assignedResult.value
+                .filter((assignment) => assignment.active && !assignment.unassignedAt)
+                .map((assignment) => assignment.mesaId),
+            )
+          : null;
+        const numbersById = mesasResult.ok
+          ? new Map(mesasResult.value.map((mesa) => [mesa.id, mesa.number]))
+          : new Map<string, string>();
         const views = localResult.value
-          .filter((operation) => mesaIds.has(operation.mesaId))
+          .filter((operation) => !mesaIds || mesaIds.has(operation.mesaId))
           .map((operation) => ({
             ...operation,
             mesaNumber: numbersById.get(operation.mesaId) ?? '—',
           }));
 
         if (active) {
+          setPartialData(missingReferenceData);
           setOperations(views);
         }
       } catch (error) {
@@ -187,6 +189,12 @@ export default function EstadosActaScreen() {
       }>
       {actorError || loadError ? (
         <StatusFeedback status="fallado" message={actorError ?? loadError ?? undefined} />
+      ) : null}
+      {partialData ? (
+        <StatusFeedback
+          status="guardado_local"
+          message="Sin conexión: mostrando los estados disponibles en el dispositivo."
+        />
       ) : null}
       {loading || isActorLoading ? (
         <StatusFeedback status="en_proceso" message="Leyendo operaciones pendientes..." />

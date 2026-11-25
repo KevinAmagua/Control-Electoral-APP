@@ -2,13 +2,32 @@ import { z } from 'zod';
 
 export const RECINTO_CODE_PREFIX = 'QTO-';
 
-export function normalizeRecintoCode(value: string): string {
+const RECINTO_CODE_PREFIXES = [
+  { pattern: /guayaquil|guayas/i, prefix: 'GYE' },
+  { pattern: /quito|pichincha/i, prefix: 'QTO' },
+] as const;
+
+export function recintoCodePrefixForLocation(
+  province?: string | null,
+  canton?: string | null,
+): string {
+  const location = `${canton ?? ''} ${province ?? ''}`;
+  for (const entry of RECINTO_CODE_PREFIXES) {
+    if (entry.pattern.test(location)) {
+      return `${entry.prefix}-`;
+    }
+  }
+  const letters = location.toUpperCase().replace(/[^A-Z]/g, '').slice(0, 3);
+  return letters ? `${letters}-` : RECINTO_CODE_PREFIX;
+}
+
+export function normalizeRecintoCode(value: string, prefix = RECINTO_CODE_PREFIX): string {
   const digits = value.replace(/\D/g, '').slice(0, 3);
-  return `${RECINTO_CODE_PREFIX}${digits}`;
+  return digits ? `${prefix}${digits}` : prefix;
 }
 
 export function isValidRecintoCode(value: string): boolean {
-  return /^QTO-\d{3}$/.test(value);
+  return /^[A-Z]{3}-\d{3}$/.test(value);
 }
 
 export function normalizeMesaNumber(value: string): string {
@@ -23,7 +42,7 @@ export const createRecintoSchema = z.object({
   code: z
     .string()
     .trim()
-    .refine(isValidRecintoCode, 'El código debe tener el formato QTO-XXX'),
+    .refine(isValidRecintoCode, 'El código debe tener el formato ABC-XXX'),
   name: z.string().trim().min(2, 'El nombre del recinto es obligatorio'),
   address: z.string().trim().min(2, 'La dirección es obligatoria'),
   parish: z.string().trim().min(1).nullable(),

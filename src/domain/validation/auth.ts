@@ -13,8 +13,8 @@ export const recoverySchema = z.object({
 
 export const confirmEmailSchema = z.object({
   email: emailSchema,
-  token: z.string().refine((value) => value === '' || /^\d{6}$/.test(value), {
-    message: 'Ingrese el código de 6 dígitos',
+  token: z.string().refine((value) => value === '' || /^\d{8}$/.test(value), {
+    message: 'Ingrese el código de 8 dígitos',
   }),
 });
 

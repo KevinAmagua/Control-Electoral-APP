@@ -4,7 +4,12 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { palette, radius, spacing, typography } from '@/core/theme';
 import { ACTA_STATUS_LABELS, type ActaStatus } from '@/domain/acta/acta-status';
 
-export type DisplayStatus = ActaStatus | 'pendiente' | null;
+export type DisplayStatus =
+  | ActaStatus
+  | 'pendiente'
+  | 'guardado_local'
+  | 'enviado'
+  | null;
 
 export function SectionTitle({ title, subtitle }: { title: string; subtitle?: string }) {
   return (
@@ -29,10 +34,14 @@ export function StatusChip({ status }: { status: DisplayStatus }) {
     status === null
       ? 'Sin acta'
       : status === 'pendiente'
-        ? 'En cola'
-        : ACTA_STATUS_LABELS[status];
+        ? 'Pendiente'
+        : status === 'guardado_local'
+          ? 'Guardado localmente'
+          : status === 'enviado'
+            ? 'Enviado'
+            : ACTA_STATUS_LABELS[status];
   const color =
-    status === 'guardado'
+    status === 'guardado' || status === 'enviado'
       ? palette.success
       : status === 'fallado'
         ? palette.danger

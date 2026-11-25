@@ -5,10 +5,8 @@ import { StyleSheet, View } from 'react-native';
 
 import { palette, spacing, typography } from '@/core/theme';
 import { dataContainer } from '@/data/container';
-import { isRecoveryCallbackUrl } from '@/domain/validation/auth';
 import { LargeTextInput, PrimaryButton, Screen, StatusFeedback } from '@/presentation/components';
 import type { FeedbackStatus } from '@/presentation/components/feedback/StatusFeedback';
-import { getHomeRoute } from '@/presentation/navigation/role-routes';
 import { useSession } from '@/presentation/session/SessionProvider';
 
 export default function AuthCallbackScreen() {
@@ -38,16 +36,18 @@ export default function AuthCallbackScreen() {
 
       if (!result.ok) {
         processedUrls.current.delete(url);
-        setFeedback({ status: 'fallado', message: result.error.message });
+        setFeedback({
+          status: 'fallado',
+          message: `No se pudo confirmar el correo: ${result.error.message}`,
+        });
         return;
       }
 
-      setFeedback({ status: 'guardado', message: 'Correo verificado correctamente' });
-      if (isRecoveryCallbackUrl(url) || result.value.mustChangePassword) {
-        router.replace({ pathname: '/restablecer-clave', params: { recovery: '1' } });
-        return;
-      }
-      router.replace(getHomeRoute(result.value));
+      setFeedback({ status: 'guardado', message: 'Correo confirmado correctamente' });
+      router.replace({
+        pathname: '/restablecer-clave',
+        params: { recovery: '1', confirmed: '1' },
+      });
     },
     [refresh],
   );
