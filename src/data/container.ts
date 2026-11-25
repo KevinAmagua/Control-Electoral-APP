@@ -43,7 +43,7 @@ export function createDataContainer() {
       login: createLoginUseCase(auth),
       changePassword: createChangePasswordUseCase(auth),
       resetPassword: createResetPasswordUseCase(auth),
-      recoverPassword: createRecoverPasswordUseCase(auth, users),
+      recoverPassword: createRecoverPasswordUseCase(auth),
       createAccount: createAccountUseCase(users),
       createRecinto: createRecintoUseCase(territoryDependencies),
       listRecintos: createListRecintosUseCase(territoryDependencies),

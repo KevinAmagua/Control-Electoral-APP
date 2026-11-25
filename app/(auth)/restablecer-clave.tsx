@@ -1,5 +1,5 @@
 import { zodResolver } from '@hookform/resolvers/zod';
-import { Link, router } from 'expo-router';
+import { Link, router, useLocalSearchParams } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { Controller, useForm, useWatch } from 'react-hook-form';
 import type { z } from 'zod';
@@ -18,6 +18,9 @@ type Feedback = { status: FeedbackStatus; message: string } | null;
 
 export default function RestablecerClaveScreen() {
   const { status, role, mustChangePassword, emailVerified, resetPassword } = useSession();
+  const params = useLocalSearchParams<{ recovery?: string | string[] }>();
+  const isRecoveryFlow =
+    (Array.isArray(params.recovery) ? params.recovery[0] : params.recovery) === '1';
   const [feedback, setFeedback] = useState<Feedback>(null);
   const { control, handleSubmit, trigger, formState: { errors, isSubmitting } } = useForm<
     ResetValues,
@@ -37,10 +40,13 @@ export default function RestablecerClaveScreen() {
   }, [newPassword, trigger]);
 
   useEffect(() => {
+    if (isRecoveryFlow) {
+      return;
+    }
     if (status === 'authenticated' && !mustChangePassword) {
       router.replace(getHomeRoute({ status, role, mustChangePassword, emailVerified }));
     }
-  }, [status, role, mustChangePassword, emailVerified]);
+  }, [status, role, mustChangePassword, emailVerified, isRecoveryFlow]);
 
   const onSubmit = async (values: ResetResult) => {
     setFeedback({ status: 'en_proceso', message: 'Guardando contraseña...' });
@@ -76,6 +82,7 @@ export default function RestablecerClaveScreen() {
                 onChangeText={field.onChange}
                 onBlur={field.onBlur}
                 secureTextEntry
+                showPasswordToggle
                 autoCapitalize="none"
                 error={errors.newPassword?.message ?? null}
               />
@@ -91,6 +98,7 @@ export default function RestablecerClaveScreen() {
                 onChangeText={field.onChange}
                 onBlur={field.onBlur}
                 secureTextEntry
+                showPasswordToggle
                 autoCapitalize="none"
                 error={errors.confirmPassword?.message ?? null}
               />

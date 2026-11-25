@@ -68,6 +68,9 @@ export default function RecuperarClaveScreen() {
           isLoading={isSubmitting}
           disabled={isSubmitting}
         />
+        <Link href="/callback" style={styles.link}>
+          Ya tengo el enlace: pegarlo aquí
+        </Link>
         <Link href="/login" style={styles.link}>
           Volver al inicio de sesión
         </Link>

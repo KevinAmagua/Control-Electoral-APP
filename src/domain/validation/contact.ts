@@ -4,6 +4,15 @@ export const emailSchema = z
   .email('Correo electrónico inválido')
   .transform((value) => value.trim().toLowerCase());
 
+export const personNameSchema = z
+  .string()
+  .trim()
+  .min(2, 'Debe tener al menos 2 caracteres')
+  .regex(
+    /^[A-Za-zÁÉÍÓÚÜÑáéíóúüñ' -]+$/,
+    'Use solo letras, espacios, apóstrofos o guiones',
+  );
+
 export const phoneSchema = z
   .string()
   .trim()

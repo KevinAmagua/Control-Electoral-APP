@@ -1,14 +1,19 @@
 import { CameraView, useCameraPermissions } from 'expo-camera';
-import { useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Image, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { palette, radius, spacing, typography } from '@/core/theme';
+import { captureError } from '@/data/monitoring/sentry';
 import {
   captureEvidencePhoto,
   persistEvidencePhoto,
   type CapturedEvidencePhoto,
 } from '@/data/evidence/photo';
-import { captureRecintoLocation, type VerifiedLocation } from '@/data/evidence/location';
+import {
+  captureRecintoLocation,
+  formatRecintoLocation,
+  type VerifiedLocation,
+} from '@/data/evidence/location';
 import type { Recinto } from '@/domain/election/recinto';
 
 export type ConfirmedEvidence = {
@@ -36,29 +41,51 @@ export function EvidenceCapture({ recinto, onConfirm }: EvidenceCaptureProps) {
   const [isCapturing, setIsCapturing] = useState(false);
   const [isConfirming, setIsConfirming] = useState(false);
   const [isLocating, setIsLocating] = useState(false);
+  const locationRequestedRef = useRef(false);
 
-  async function handleLocate() {
+  const handleLocate = useCallback(async () => {
     setIsLocating(true);
     setMessage(null);
-    const result = await captureRecintoLocation(recinto);
-    setIsLocating(false);
-    if (result.ok) {
-      setLocation(result.value);
-    } else {
-      setMessage(result.error.message);
+    try {
+      const result = await captureRecintoLocation(recinto);
+      if (result.ok) {
+        setLocation(result.value);
+      } else {
+        setMessage(result.error.message);
+      }
+    } catch (error) {
+      captureError(error, { scope: 'evidence.location' });
+      setMessage(error instanceof Error ? error.message : 'No fue posible obtener la ubicación.');
+    } finally {
+      setIsLocating(false);
     }
-  }
+  }, [recinto]);
+
+  useEffect(() => {
+    if (!permission?.granted || locationRequestedRef.current) {
+      return;
+    }
+    locationRequestedRef.current = true;
+    void handleLocate();
+  }, [handleLocate, permission?.granted]);
 
   async function handleCapture() {
     setIsCapturing(true);
     setMessage(null);
-    const result = await captureEvidencePhoto(cameraRef.current);
-    setIsCapturing(false);
-    if (!result.ok) {
-      setMessage(result.error.message);
-      return;
+    try {
+      const result = await captureEvidencePhoto(cameraRef.current);
+      if (!result.ok) {
+        setMessage(result.error.message);
+        return;
+      }
+      setPhoto(result.value);
+      void handleLocate();
+    } catch (error) {
+      captureError(error, { scope: 'evidence.capture' });
+      setMessage(error instanceof Error ? error.message : 'No fue posible capturar la foto.');
+    } finally {
+      setIsCapturing(false);
     }
-    setPhoto(result.value);
   }
 
   async function handleConfirm() {
@@ -69,23 +96,28 @@ export function EvidenceCapture({ recinto, onConfirm }: EvidenceCaptureProps) {
 
     setIsConfirming(true);
     setMessage(null);
-    const persisted = await persistEvidencePhoto(photo.uri);
-    if (!persisted.ok) {
-      setIsConfirming(false);
-      setMessage(persisted.error.message);
-      return;
-    }
+    try {
+      const persisted = await persistEvidencePhoto(photo.uri);
+      if (!persisted.ok) {
+        setMessage(persisted.error.message);
+        return;
+      }
 
-    await onConfirm({
-      fotoPath: persisted.value,
-      gpsLat: location.latitude,
-      gpsLng: location.longitude,
-      gpsPrecision: location.accuracy,
-      distanceMeters: location.distanceMeters,
-      outsideRadius: location.outsideRadius,
-      blurScore: photo.blurScore,
-    });
-    setIsConfirming(false);
+      await onConfirm({
+        fotoPath: persisted.value,
+        gpsLat: location.latitude,
+        gpsLng: location.longitude,
+        gpsPrecision: location.accuracy,
+        distanceMeters: location.distanceMeters,
+        outsideRadius: location.outsideRadius,
+        blurScore: photo.blurScore,
+      });
+    } catch (error) {
+      captureError(error, { scope: 'evidence.confirm' });
+      setMessage(error instanceof Error ? error.message : 'No fue posible confirmar la evidencia.');
+    } finally {
+      setIsConfirming(false);
+    }
   }
 
   if (!permission) {
@@ -108,6 +140,10 @@ export function EvidenceCapture({ recinto, onConfirm }: EvidenceCaptureProps) {
   return (
     <View style={styles.container}>
       <View style={styles.locationCard}>
+        <Text style={styles.locationDetail}>
+          Recinto: {recinto.code} · {recinto.name}
+        </Text>
+        <Text style={styles.locationDetail}>Ubicación: {formatRecintoLocation(recinto)}</Text>
         {location ? (
           <Text style={location.outsideRadius ? styles.dangerText : styles.successText}>
             {location.outsideRadius
@@ -115,7 +151,9 @@ export function EvidenceCapture({ recinto, onConfirm }: EvidenceCaptureProps) {
               : `Ubicación verificada: ${location.distanceMeters} m del recinto`}
           </Text>
         ) : (
-          <Text style={styles.locationHint}>Obtenga la ubicación para verificar el recinto.</Text>
+          <Text style={styles.locationHint}>
+            La ubicación se obtiene automáticamente al abrir la cámara y al capturar la foto.
+          </Text>
         )}
         <Pressable
           style={[styles.secondaryButton, isLocating && styles.buttonDisabled]}
@@ -206,6 +244,10 @@ const styles = StyleSheet.create({
   },
   locationHint: {
     color: palette.textMuted,
+    fontSize: typography.caption,
+  },
+  locationDetail: {
+    color: palette.text,
     fontSize: typography.caption,
   },
   permissionCard: {

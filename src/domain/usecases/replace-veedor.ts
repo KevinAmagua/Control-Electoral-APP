@@ -31,6 +31,17 @@ export function createReplaceVeedorUseCase(dependencies: AssignmentContextDepend
       return failure('VEEDOR_IGUAL', 'El veedor sustituto debe ser distinto');
     }
 
+    for (const mesa of contextResult.value.mesas) {
+      const activeResult = await dependencies.assignments.getActiveByMesa(mesa.id);
+      if (!activeResult.ok) {
+        return activeResult;
+      }
+      const active = activeResult.value;
+      if (!active || active.veedorId !== input.previousVeedorId) {
+        return failure('ASIGNACION_PREVIA_NO_ENCONTRADA', `La mesa ${mesa.number} no está asignada al veedor indicado`);
+      }
+    }
+
     let nextVeedor: UserProfile | null = null;
     if (input.nextVeedorId) {
       const nextResult = await dependencies.users.getById(input.nextVeedorId);
@@ -60,17 +71,6 @@ export function createReplaceVeedorUseCase(dependencies: AssignmentContextDepend
       nextVeedor.recintoId !== actor.recintoId
     ) {
       return failure('VEEDOR_INVALIDO', 'El sustituto debe ser un veedor activo de su recinto');
-    }
-
-    for (const mesa of contextResult.value.mesas) {
-      const activeResult = await dependencies.assignments.getActiveByMesa(mesa.id);
-      if (!activeResult.ok) {
-        return activeResult;
-      }
-      const active = activeResult.value;
-      if (!active || active.veedorId !== input.previousVeedorId) {
-        return failure('ASIGNACION_PREVIA_NO_ENCONTRADA', `La mesa ${mesa.number} no está asignada al veedor indicado`);
-      }
     }
 
     return dependencies.assignments.replace({

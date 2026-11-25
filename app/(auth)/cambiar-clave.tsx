@@ -1,5 +1,5 @@
 import { zodResolver } from '@hookform/resolvers/zod';
-import { router } from 'expo-router';
+import { Link, router } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { Controller, useForm, useWatch } from 'react-hook-form';
 import type { z } from 'zod';
@@ -108,6 +108,7 @@ export default function CambiarClaveScreen() {
               onChangeText={field.onChange}
               onBlur={field.onBlur}
               secureTextEntry
+              showPasswordToggle
               autoCapitalize="none"
               error={errors.currentPassword?.message ?? null}
             />
@@ -123,6 +124,7 @@ export default function CambiarClaveScreen() {
               onChangeText={field.onChange}
               onBlur={field.onBlur}
               secureTextEntry
+              showPasswordToggle
               autoCapitalize="none"
               error={errors.newPassword?.message ?? null}
             />
@@ -138,6 +140,7 @@ export default function CambiarClaveScreen() {
               onChangeText={field.onChange}
               onBlur={field.onBlur}
               secureTextEntry
+              showPasswordToggle
               autoCapitalize="none"
               error={errors.confirmPassword?.message ?? null}
             />
@@ -159,6 +162,9 @@ export default function CambiarClaveScreen() {
           onPress={() => void signOut()}
           tone="secondary"
         />
+        <Link href="/recuperar-clave" style={styles.link}>
+          No conozco mi contraseña actual
+        </Link>
       </Screen>
     </KeyboardAvoidingView>
   );
@@ -183,5 +189,11 @@ const styles = StyleSheet.create({
   infoText: {
     color: palette.textMuted,
     fontSize: typography.caption,
+  },
+  link: {
+    color: palette.accent,
+    fontSize: typography.caption,
+    fontWeight: '700',
+    textAlign: 'center',
   },
 });

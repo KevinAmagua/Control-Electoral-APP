@@ -1,5 +1,6 @@
 import { CameraView } from 'expo-camera';
 import { Directory, File, Paths } from 'expo-file-system';
+import { ImageManipulator, SaveFormat } from 'expo-image-manipulator';
 import { Platform } from 'react-native';
 
 import { failure, ok, type Result } from '@/core/result/result';
@@ -23,14 +24,19 @@ function createId(): string {
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
-export function assessSharpness(width: number, height: number, bytes: number): {
+const SHARPNESS_SAMPLE_WIDTH = 640;
+const SHARPNESS_DENSITY_FLOOR = 0.04;
+const SHARPNESS_DENSITY_CEILING = 0.34;
+
+export function assessSharpness(bytes: number, width: number, height: number): {
   blurScore: number;
   sharpness: SharpnessLevel;
 } {
-  const minSide = Math.min(width, height);
-  const score = Math.round(
-    Math.min(100, (Math.min(bytes, 240000) / 240000) * 60 + (Math.min(minSide, 1280) / 1280) * 40),
-  );
+  const pixels = Math.max(1, width * height);
+  const density = bytes / pixels;
+  const normalized =
+    (density - SHARPNESS_DENSITY_FLOOR) / (SHARPNESS_DENSITY_CEILING - SHARPNESS_DENSITY_FLOOR);
+  const score = Math.round(Math.max(0, Math.min(100, normalized * 100)));
 
   if (score >= 75) {
     return { blurScore: score, sharpness: 'buena' };
@@ -39,6 +45,20 @@ export function assessSharpness(width: number, height: number, bytes: number): {
     return { blurScore: score, sharpness: 'advertencia' };
   }
   return { blurScore: score, sharpness: 'baja' };
+}
+
+async function measureSharpness(uri: string): Promise<{
+  blurScore: number;
+  sharpness: SharpnessLevel;
+}> {
+  const context = ImageManipulator.manipulate(uri, { maxWidth: 1280, maxHeight: 1280 }).resize({
+    width: SHARPNESS_SAMPLE_WIDTH,
+  });
+  const rendered = await context.renderAsync();
+  const sample = await rendered.saveAsync({ compress: 0.6, format: SaveFormat.JPEG });
+  const sampleFile = new File(sample.uri);
+  const bytes = sampleFile.exists ? sampleFile.size : 0;
+  return assessSharpness(bytes, sample.width, sample.height);
 }
 
 export async function captureEvidencePhoto(
@@ -55,7 +75,7 @@ export async function captureEvidencePhoto(
     const picture = await camera.takePictureAsync({ quality: 0.9, exif: false, base64: false });
     const file = new File(picture.uri);
     const bytes = file.exists ? file.size : 0;
-    const assessment = assessSharpness(picture.width, picture.height, bytes);
+    const assessment = await measureSharpness(picture.uri);
 
     return ok({
       uri: picture.uri,

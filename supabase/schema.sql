@@ -83,6 +83,7 @@ create table if not exists public.profiles (
   email text not null unique,
   email_verified boolean not null default false,
   must_change_password boolean not null default true,
+  password_changed_at timestamptz,
   recinto_id uuid references public.recintos(id) on delete set null,
   province text,
   canton text,
@@ -90,6 +91,8 @@ create table if not exists public.profiles (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+alter table public.profiles add column if not exists password_changed_at timestamptz;
 
 create unique index if not exists profiles_one_active_coordinator_per_recinto
   on public.profiles (recinto_id)
@@ -306,6 +309,36 @@ begin
 end;
 $$;
 
+create or replace function private.prevent_cambio_jurisdiccion_recinto()
+returns trigger
+language plpgsql
+security definer
+set search_path = public, pg_temp
+set row_security = off
+as $$
+begin
+  if new.province is distinct from old.province
+     or new.canton is distinct from old.canton
+     or new.parish is distinct from old.parish then
+    if not exists (
+      select 1
+      from private.current_profile() cp
+      where cp.active
+        and cp.role = 'coordinador_provincial'
+        and cp.province = old.province
+        and cp.canton = old.canton
+    ) then
+      raise exception 'SOLO_PROVINCIAL_PUEDE_CAMBIAR_JURISDICCION' using errcode = '42501';
+    end if;
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists recintos_prevent_jurisdiccion on public.recintos;
+create trigger recintos_prevent_jurisdiccion before update on public.recintos
+for each row execute function private.prevent_cambio_jurisdiccion_recinto();
+
 create or replace function private.can_access_mesa(p_mesa_id uuid)
 returns boolean
 language plpgsql
@@ -382,6 +415,64 @@ begin
 end;
 $$;
 
+create or replace function private.can_read_acta(p_acta_id uuid)
+returns boolean
+language plpgsql
+stable
+security definer
+set search_path = public
+set row_security = off
+as $$
+declare
+  v_mesa_id uuid;
+begin
+  select mesa_id into v_mesa_id from public.actas where id = p_acta_id;
+  if not found then
+    return false;
+  end if;
+  return private.can_access_mesa(v_mesa_id);
+end;
+$$;
+
+create or replace function private.can_write_mesa(p_mesa_id uuid)
+returns boolean
+language plpgsql
+stable
+security definer
+set search_path = public
+set row_security = off
+as $$
+declare
+  v_profile public.profiles;
+  v_recinto_id uuid;
+begin
+  select * into v_profile from private.current_profile();
+  if not found or not v_profile.active then
+    return false;
+  end if;
+
+  if v_profile.role = 'veedor' then
+    return exists (
+      select 1
+      from public.assignments a
+      where a.mesa_id = p_mesa_id
+        and a.veedor_id = v_profile.id
+        and a.active
+    );
+  end if;
+
+  if v_profile.role <> 'coordinador_recinto' then
+    return false;
+  end if;
+
+  select recinto_id into v_recinto_id from public.mesas where id = p_mesa_id;
+  if not found then
+    return false;
+  end if;
+  return v_profile.recinto_id = v_recinto_id;
+end;
+$$;
+
 create or replace function private.can_resolve_conflict(p_acta_id uuid)
 returns boolean
 language plpgsql
@@ -409,6 +500,28 @@ begin
     return false;
   end if;
   return private.can_edit_recinto(v_recinto_id);
+end;
+$$;
+
+create or replace function private.can_review_conflict(p_mesa_id uuid)
+returns boolean
+language plpgsql
+stable
+security definer
+set search_path = public, pg_temp
+set row_security = off
+as $$
+declare
+  v_profile public.profiles;
+  v_recinto_id uuid;
+begin
+  select * into v_profile from private.current_profile();
+  if not found or not v_profile.active or v_profile.role <> 'coordinador_recinto' then
+    return false;
+  end if;
+
+  select recinto_id into v_recinto_id from public.mesas where id = p_mesa_id;
+  return v_recinto_id = v_profile.recinto_id;
 end;
 $$;
 
@@ -520,8 +633,15 @@ begin
     raise exception 'AUTENTICACION_REQUERIDA';
   end if;
 
+  if not exists (
+    select 1 from public.profiles
+    where id = auth.uid() and password_changed_at is not null
+  ) then
+    raise exception 'CLAVE_NO_ACTUALIZADA';
+  end if;
+
   update public.profiles
-  set must_change_password = false, updated_at = now()
+  set must_change_password = false, password_changed_at = null, updated_at = now()
   where id = auth.uid();
 end;
 $$;
@@ -560,6 +680,31 @@ create trigger on_auth_user_email_verified
 after update of email_confirmed_at on auth.users
 for each row execute function public.sync_profile_email_verified();
 
+create or replace function public.sync_profile_password_changed()
+returns trigger
+language plpgsql
+security definer
+set search_path = public, pg_temp
+set row_security = off
+as $$
+begin
+  if new.encrypted_password is distinct from old.encrypted_password then
+    update public.profiles
+    set password_changed_at = now(), updated_at = now()
+    where id = new.id;
+  end if;
+  return new;
+end;
+$$;
+
+revoke all on function public.sync_profile_password_changed() from public, anon, authenticated;
+grant execute on function public.sync_profile_password_changed() to postgres, service_role;
+
+drop trigger if exists on_auth_user_password_changed on auth.users;
+create trigger on_auth_user_password_changed
+after update of encrypted_password on auth.users
+for each row execute function public.sync_profile_password_changed();
+
 create or replace function public.registrar_acta(
   p_operacion_cliente_id uuid,
   p_mesa_id uuid,
@@ -578,15 +723,16 @@ create or replace function public.registrar_acta(
 )
 returns public.actas
 language plpgsql
-security invoker
+security definer
 set search_path = public
+set row_security = off
 as $$
 declare
   v_acta public.actas;
   v_votos_candidatos integer;
 begin
-  if not private.can_access_mesa(p_mesa_id) then
-    raise exception 'SIN_PERMISO_PARA_LA_MESA';
+  if not private.can_write_mesa(p_mesa_id) then
+    raise exception 'SIN_PERMISO_PARA_ESCRIBIR_ACTA';
   end if;
 
   select * into v_acta from public.actas where operacion_cliente_id = p_operacion_cliente_id;
@@ -721,9 +867,10 @@ create or replace function public.asignar_veedor(
 )
 returns setof public.assignments
 language plpgsql
-security invoker
+security definer
 set search_path = public
-as $$
+set row_security = off
+as $
 declare
   v_profile public.profiles;
   v_veedor public.profiles;
@@ -732,7 +879,7 @@ declare
   v_assignment public.assignments;
 begin
   select * into v_profile from private.current_profile();
-  if not found or v_profile.role not in ('coordinador_provincial', 'coordinador_recinto') then
+  if not found or v_profile.role <> 'coordinador_recinto' then
     raise exception 'SIN_PERMISO_PARA_ASIGNAR';
   end if;
 
@@ -780,9 +927,10 @@ create or replace function public.reemplazar_veedor(
 )
 returns setof public.assignments
 language plpgsql
-security invoker
+security definer
 set search_path = public
-as $$
+set row_security = off
+as $
 declare
   v_profile public.profiles;
   v_veedor public.profiles;
@@ -792,7 +940,7 @@ declare
   v_assignment public.assignments;
 begin
   select * into v_profile from private.current_profile();
-  if not found or v_profile.role not in ('coordinador_provincial', 'coordinador_recinto') then
+  if not found or v_profile.role <> 'coordinador_recinto' then
     raise exception 'SIN_PERMISO_PARA_ASIGNAR';
   end if;
   if coalesce(array_length(p_mesa_ids, 1), 0) = 0 then
@@ -875,7 +1023,7 @@ as $$
   select (storage.foldername(p_object_name))[1] = (select auth.uid())::text
       or exists (
         select 1 from public.actas a
-        where a.foto_path = p_object_name and private.can_edit_acta(a.id)
+        where a.foto_path = p_object_name and private.can_read_acta(a.id)
       );
 $$;
 
@@ -914,8 +1062,9 @@ grant usage on schema public to authenticated;
 grant select on public.organizations, public.candidates to authenticated;
 grant select, insert, update, delete on public.recintos, public.mesas, public.jrv_members, public.profiles, public.assignments, public.actas, public.vote_details, public.acta_edit_conflicts to authenticated;
 grant insert, update, delete on public.organizations, public.candidates to authenticated;
-grant execute on function private.current_profile(), private.can_access_recinto(uuid), private.can_edit_recinto(uuid), private.can_access_mesa(uuid), private.can_edit_mesa(uuid), private.can_edit_acta(uuid), private.can_resolve_conflict(uuid), private.completar_cambio_clave(), public.completar_cambio_clave(), public.registrar_acta(uuid, uuid, public.dignidad, integer, integer, integer, integer, integer, double precision, double precision, double precision, text, text, jsonb) to authenticated;
-revoke all on function private.current_profile(), private.can_access_recinto(uuid), private.can_edit_recinto(uuid), private.can_access_mesa(uuid), private.can_edit_mesa(uuid), private.can_edit_acta(uuid), private.can_resolve_conflict(uuid), private.completar_cambio_clave(), public.completar_cambio_clave() from public, anon;
+grant execute on function private.current_profile(), private.can_access_recinto(uuid), private.can_edit_recinto(uuid), private.can_access_mesa(uuid), private.can_edit_mesa(uuid), private.can_edit_acta(uuid), private.can_read_acta(uuid), private.can_write_mesa(uuid), private.can_resolve_conflict(uuid), private.can_review_conflict(uuid), private.completar_cambio_clave(), public.completar_cambio_clave(), public.registrar_acta(uuid, uuid, public.dignidad, integer, integer, integer, integer, integer, double precision, double precision, double precision, text, text, jsonb) to authenticated;
+revoke all on function private.current_profile(), private.can_access_recinto(uuid), private.can_edit_recinto(uuid), private.can_access_mesa(uuid), private.can_edit_mesa(uuid), private.can_edit_acta(uuid), private.can_read_acta(uuid), private.can_write_mesa(uuid), private.can_resolve_conflict(uuid), private.can_review_conflict(uuid), private.completar_cambio_clave(), public.completar_cambio_clave(), public.registrar_acta(uuid, uuid, public.dignidad, integer, integer, integer, integer, integer, double precision, double precision, double precision, text, text, jsonb) from public, anon;
+revoke all on function private.prevent_cambio_jurisdiccion_recinto() from public, anon, authenticated;
 revoke all on function public.current_profile(), public.can_access_recinto(uuid), public.can_edit_recinto(uuid), public.can_access_mesa(uuid), public.can_edit_mesa(uuid), public.can_edit_acta(uuid), public.can_resolve_conflict(uuid) from public, anon, authenticated;
 drop function if exists public.current_profile();
 drop function if exists public.can_access_recinto(uuid);
@@ -967,7 +1116,18 @@ create policy candidates_delete on public.candidates for delete to authenticated
 
 drop policy if exists recintos_select on public.recintos;
 create policy recintos_select on public.recintos for select to authenticated using (
-  private.can_access_recinto(recintos.id)
+  exists (
+    select 1 from private.current_profile() cp
+    where cp.active and (
+      (cp.role = 'coordinador_provincial' and recintos.province = cp.province and recintos.canton = cp.canton)
+      or (cp.role = 'coordinador_recinto' and recintos.id = cp.recinto_id)
+      or (cp.role = 'veedor' and exists (
+        select 1 from public.mesas m
+        join public.assignments a on a.mesa_id = m.id
+        where m.recinto_id = recintos.id and a.veedor_id = cp.id and a.active
+      ))
+    )
+  )
 );
 
 drop policy if exists recintos_insert on public.recintos;
@@ -1043,35 +1203,9 @@ create policy mesas_insert on public.mesas for insert to authenticated with chec
 
 drop policy if exists mesas_update on public.mesas;
 create policy mesas_update on public.mesas for update to authenticated using (
-  exists (
-    select 1
-    from private.current_profile() cp
-    where cp.active and (
-      (cp.role <> 'veedor' and private.can_edit_recinto(mesas.recinto_id))
-      or (
-        cp.role = 'veedor'
-        and exists (
-          select 1 from public.assignments a
-          where a.mesa_id = mesas.id and a.veedor_id = cp.id and a.active
-        )
-      )
-    )
-  )
+  private.can_edit_mesa(mesas.id)
 ) with check (
-  exists (
-    select 1
-    from private.current_profile() cp
-    where cp.active and (
-      (cp.role <> 'veedor' and private.can_edit_recinto(mesas.recinto_id))
-      or (
-        cp.role = 'veedor'
-        and exists (
-          select 1 from public.assignments a
-          where a.mesa_id = mesas.id and a.veedor_id = cp.id and a.active
-        )
-      )
-    )
-  )
+  private.can_edit_mesa(mesas.id)
 );
 
 drop policy if exists mesas_delete on public.mesas;
@@ -1210,13 +1344,29 @@ create policy profiles_delete on public.profiles for delete to authenticated usi
 
 drop policy if exists assignments_select on public.assignments;
 create policy assignments_select on public.assignments for select to authenticated using (
-  exists (select 1 from private.current_profile() cp where cp.role = 'veedor' and cp.id = veedor_id)
-  or private.can_edit_mesa(mesa_id)
+  (
+    assignments.active
+    and exists (
+      select 1
+      from private.current_profile() cp
+      where cp.active and cp.role = 'veedor' and cp.id = assignments.veedor_id
+    )
+  )
+  or private.can_edit_mesa(assignments.mesa_id)
 );
 
 drop policy if exists assignments_insert on public.assignments;
 create policy assignments_insert on public.assignments for insert to authenticated with check (
   private.can_edit_mesa(mesa_id)
+  and exists (
+    select 1
+    from public.profiles v
+    join public.mesas m on m.id = assignments.mesa_id
+    where v.id = assignments.veedor_id
+      and v.role = 'veedor'
+      and v.active
+      and v.recinto_id = m.recinto_id
+  )
 );
 
 drop policy if exists assignments_update on public.assignments;
@@ -1235,44 +1385,39 @@ drop policy if exists actas_select on public.actas;
 create policy actas_select on public.actas for select to authenticated using (private.can_access_mesa(mesa_id));
 
 drop policy if exists actas_insert on public.actas;
-create policy actas_insert on public.actas for insert to authenticated with check (
-  private.can_access_mesa(mesa_id) and registrado_por = (select auth.uid())
-);
+drop policy if exists actas_insert_deny on public.actas;
+create policy actas_insert_deny on public.actas for insert to authenticated with check (false);
 
 drop policy if exists actas_update on public.actas;
-create policy actas_update on public.actas for update to authenticated using (private.can_access_mesa(mesa_id)) with check (private.can_access_mesa(mesa_id));
+drop policy if exists actas_update_deny on public.actas;
+create policy actas_update_deny on public.actas for update to authenticated using (false) with check (false);
 
 drop policy if exists actas_delete on public.actas;
-create policy actas_delete on public.actas for delete to authenticated using (
-  private.can_edit_mesa(mesa_id)
-);
+drop policy if exists actas_delete_deny on public.actas;
+create policy actas_delete_deny on public.actas for delete to authenticated using (false);
 
 drop policy if exists vote_details_select on public.vote_details;
 create policy vote_details_select on public.vote_details for select to authenticated using (
-  private.can_edit_acta(acta_id)
+  private.can_read_acta(acta_id)
 );
 
 drop policy if exists vote_details_insert on public.vote_details;
-create policy vote_details_insert on public.vote_details for insert to authenticated with check (
-  private.can_edit_acta(acta_id)
-);
+drop policy if exists vote_details_insert_deny on public.vote_details;
+create policy vote_details_insert_deny on public.vote_details for insert to authenticated with check (false);
 
 drop policy if exists vote_details_update on public.vote_details;
-create policy vote_details_update on public.vote_details for update to authenticated using (
-  private.can_edit_acta(acta_id)
-) with check (
-  private.can_edit_acta(acta_id)
-);
+drop policy if exists vote_details_update_deny on public.vote_details;
+create policy vote_details_update_deny on public.vote_details for update to authenticated using (false) with check (false);
 
 drop policy if exists vote_details_delete on public.vote_details;
-create policy vote_details_delete on public.vote_details for delete to authenticated using (
-  private.can_edit_acta(acta_id)
-);
+drop policy if exists vote_details_delete_deny on public.vote_details;
+create policy vote_details_delete_deny on public.vote_details for delete to authenticated using (false);
 
 drop policy if exists conflicts_select on public.acta_edit_conflicts;
 create policy conflicts_select on public.acta_edit_conflicts for select to authenticated using (
-  acta_id is not null and private.can_edit_acta(acta_id)
+  (acta_id is not null and private.can_read_acta(acta_id))
   or private.can_edit_mesa(mesa_id)
+  or (acta_id is null and detected_by = (select auth.uid()))
 );
 
 drop policy if exists conflicts_insert on public.acta_edit_conflicts;
@@ -1282,10 +1427,30 @@ create policy conflicts_insert on public.acta_edit_conflicts for insert to authe
 
 drop policy if exists conflicts_update on public.acta_edit_conflicts;
 create policy conflicts_update on public.acta_edit_conflicts for update to authenticated using (
-  private.can_resolve_conflict(acta_id) or (acta_id is null and private.can_edit_mesa(mesa_id))
+  (acta_id is not null and exists (
+    select 1
+    from public.actas a
+    join public.mesas m on m.id = a.mesa_id
+    where a.id = acta_id and private.can_review_conflict(m.id)
+  ))
+  or (acta_id is null and private.can_review_conflict(mesa_id))
 ) with check (
-  private.can_resolve_conflict(acta_id) or (acta_id is null and private.can_edit_mesa(mesa_id))
+  (acta_id is not null and exists (
+    select 1
+    from public.actas a
+    join public.mesas m on m.id = a.mesa_id
+    where a.id = acta_id and private.can_review_conflict(m.id)
+  ))
+  or (acta_id is null and private.can_review_conflict(mesa_id))
 );
 
 drop policy if exists conflicts_delete on public.acta_edit_conflicts;
-create policy conflicts_delete on public.acta_edit_conflicts for delete to authenticated using (private.can_resolve_conflict(acta_id));
+create policy conflicts_delete on public.acta_edit_conflicts for delete to authenticated using (
+  (acta_id is not null and exists (
+    select 1
+    from public.actas a
+    join public.mesas m on m.id = a.mesa_id
+    where a.id = acta_id and private.can_review_conflict(m.id)
+  ))
+  or (acta_id is null and private.can_review_conflict(mesa_id))
+);

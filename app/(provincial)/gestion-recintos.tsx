@@ -1,5 +1,4 @@
 import { zodResolver } from '@hookform/resolvers/zod';
-import { router } from 'expo-router';
 import { useCallback, useEffect, useState } from 'react';
 import { Controller, useForm, useWatch } from 'react-hook-form';
 import type { z } from 'zod';
@@ -73,6 +72,8 @@ export default function GestionRecintosScreen() {
     },
   });
   const selectedRecintoId = useWatch({ control, name: 'recintoId' });
+  const selectedRecinto = recintos.find((recinto) => recinto.id === selectedRecintoId) ?? null;
+  const recintoOcupado = Boolean(selectedRecinto?.coordinator);
 
   const startLoading = useCallback(() => {
     void Promise.resolve().then(() => setLoading(true));
@@ -248,6 +249,12 @@ export default function GestionRecintosScreen() {
       });
       return;
     }
+    if (selectedRecinto?.coordinator) {
+      const message = `Ya hay un coordinador asignado a este recinto: ${fullName(selectedRecinto.coordinator)}. Seleccione otro recinto.`;
+      setError('recintoId', { type: 'server', message });
+      setFeedback({ status: 'validacion', message });
+      return;
+    }
 
     setFeedback(null);
     const created = await dataContainer.useCases.createAccount({
@@ -256,10 +263,20 @@ export default function GestionRecintosScreen() {
     });
 
     if (!created.ok) {
-      if (created.error.code === 'CEDULA_YA_REGISTRADA' || created.error.code === 'REGISTRO_DUPLICADO') {
+      if (created.error.code === 'CEDULA_INVALIDA') {
+        setError('cedula', { type: 'server', message: created.error.message });
+      } else if (created.error.code === 'CEDULA_YA_REGISTRADA') {
         setError('cedula', { type: 'server', message: created.error.message });
       } else if (created.error.code === 'CORREO_YA_REGISTRADO') {
         setError('email', { type: 'server', message: created.error.message });
+      } else if (created.error.code === 'COORDINADOR_YA_ASIGNADO') {
+        setError('recintoId', { type: 'server', message: created.error.message });
+        setFeedback({ status: 'fallado', message: created.error.message });
+      } else if (created.error.code === 'REGISTRO_DUPLICADO') {
+        setFeedback({
+          status: 'fallado',
+          message: 'Ya existe un registro con esos datos. Revise la cédula, el correo y que el recinto no tenga otro coordinador activo.',
+        });
       } else if (
         created.error.code === 'JURISDICCION_REQUERIDA' ||
         created.error.code === 'FUERA_DE_JURISDICCION' ||
@@ -387,6 +404,11 @@ export default function GestionRecintosScreen() {
       ) : null}
       {errors.recintoId?.message ? (
         <StatusFeedback status="validacion" message={errors.recintoId.message} />
+      ) : recintoOcupado && selectedRecinto?.coordinator ? (
+        <StatusFeedback
+          status="validacion"
+          message={`Ya hay un coordinador asignado a este recinto: ${fullName(selectedRecinto.coordinator)}. Seleccione otro recinto.`}
+        />
       ) : null}
       <Controller
         control={control}
@@ -473,9 +495,8 @@ export default function GestionRecintosScreen() {
         label="Crear y asignar coordinador"
         onPress={handleSubmit(handleCreateCoordinator, () => setFeedback(null))}
         isLoading={isSubmitting}
-        disabled={isSubmitting || submitting || !selectedRecintoId || !actorId}
+        disabled={isSubmitting || submitting || recintoOcupado || !selectedRecintoId || !actorId}
       />
-      <PrimaryButton label="Volver al panel" onPress={() => router.back()} tone="secondary" />
     </Screen>
   );
 }

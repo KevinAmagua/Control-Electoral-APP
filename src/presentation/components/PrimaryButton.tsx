@@ -14,6 +14,7 @@ type PrimaryButtonProps = {
   isLoading?: boolean;
   disabled?: boolean;
   tone?: 'primary' | 'accent' | 'secondary';
+  compact?: boolean;
 };
 
 export function PrimaryButton({
@@ -22,6 +23,7 @@ export function PrimaryButton({
   isLoading = false,
   disabled = false,
   tone = 'primary',
+  compact = false,
 }: PrimaryButtonProps) {
   const scale = useSharedValue(1);
   const [pressed, setPressed] = useState(false);
@@ -66,16 +68,22 @@ export function PrimaryButton({
         onPressOut={() => setPressed(false)}
         onPress={onPress}
         style={({ pressed }) => [
-          styles.button,
+          compact ? styles.compactButton : styles.button,
           { backgroundColor, borderColor },
           pressed && !isDisabled && styles.pressed,
           isDisabled && styles.disabled,
         ]}>
-        <View style={styles.content}>
+        <View style={compact ? styles.compactContent : styles.content}>
           {isLoading ? (
             <ActivityIndicator color={foregroundColor} size="small" />
           ) : (
-            <Text style={[styles.label, { color: foregroundColor }]}>{label}</Text>
+            <Text
+              style={[
+                compact ? styles.compactLabel : styles.label,
+                { color: foregroundColor },
+              ]}>
+              {label}
+            </Text>
           )}
         </View>
       </Pressable>
@@ -92,13 +100,30 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.xl,
     borderWidth: 1,
   },
+  compactButton: {
+    minHeight: controlSize.compactHeight,
+    borderRadius: radius.sm,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: spacing.sm,
+    borderWidth: 1,
+  },
   content: {
     minHeight: typography.body + spacing.md,
     justifyContent: 'center',
     alignItems: 'center',
   },
+  compactContent: {
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
   label: {
     fontSize: typography.body,
+    fontWeight: '700',
+    textAlign: 'center',
+  },
+  compactLabel: {
+    fontSize: typography.caption,
     fontWeight: '700',
     textAlign: 'center',
   },

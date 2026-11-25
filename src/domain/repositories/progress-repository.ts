@@ -11,4 +11,5 @@ export type ProgressSnapshot = {
 
 export interface ProgressRepository {
   getSnapshot(filter: { recintoId?: string }): Promise<Result<ProgressSnapshot>>;
+  subscribeToProgress(listener: () => void): () => void;
 }

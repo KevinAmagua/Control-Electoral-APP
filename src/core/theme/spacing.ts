@@ -16,5 +16,6 @@ export const radius = {
 
 export const controlSize = {
   minHeight: 56,
+  compactHeight: 44,
   touchTarget: 56,
 } as const;

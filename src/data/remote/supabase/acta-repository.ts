@@ -5,8 +5,10 @@ import type { ActaRepository } from '@/domain/repositories/acta-repository';
 import type { SyncConflict } from '@/domain/sync/operation';
 import { actaDraftSchema } from '@/domain/validation/acta';
 
+import { queryWithLocalCache } from '../../local/sqliteClient';
 import { supabase } from './client';
 import { errorMessage, toFailure } from './errors';
+import { subscribeToTableChanges } from './realtime';
 import {
   mapActa,
   mapConflict,
@@ -124,98 +126,108 @@ async function registerViaRpc(draft: ActaDraft): Promise<Acta> {
 export function createSupabaseActaRepository(): ActaRepository {
   return {
     async getById(actaId): Promise<Result<Acta | null>> {
-      try {
-        const { data, error } = await supabase
-          .from('actas')
-          .select('*')
-          .eq('id', actaId)
-          .maybeSingle();
-        if (error) {
-          throw error;
+      return queryWithLocalCache(`acta:id:${actaId}`, async () => {
+        try {
+          const { data, error } = await supabase
+            .from('actas')
+            .select('*')
+            .eq('id', actaId)
+            .maybeSingle();
+          if (error) {
+            throw error;
+          }
+          if (!data) {
+            return ok(null);
+          }
+          const votes = await fetchVotesMap([actaId]);
+          return ok(mapActa(data as ActaRow, votes.get(actaId) ?? []));
+        } catch (error) {
+          return toFailure(error, 'ERROR_CONSULTAR_ACTA');
         }
-        if (!data) {
-          return ok(null);
-        }
-        const votes = await fetchVotesMap([actaId]);
-        return ok(mapActa(data as ActaRow, votes.get(actaId) ?? []));
-      } catch (error) {
-        return toFailure(error, 'ERROR_CONSULTAR_ACTA');
-      }
+      });
     },
 
     async getByMesaAndDignidad(mesaId, dignidad: Dignity): Promise<Result<Acta | null>> {
-      try {
-        const { data, error } = await supabase
-          .from('actas')
-          .select('*')
-          .eq('mesa_id', mesaId)
-          .eq('dignidad', dignidad)
-          .maybeSingle();
-        if (error) {
-          throw error;
+      return queryWithLocalCache(`acta:${mesaId}:${dignidad}`, async () => {
+        try {
+          const { data, error } = await supabase
+            .from('actas')
+            .select('*')
+            .eq('mesa_id', mesaId)
+            .eq('dignidad', dignidad)
+            .maybeSingle();
+          if (error) {
+            throw error;
+          }
+          if (!data) {
+            return ok(null);
+          }
+          const row = data as ActaRow;
+          const votes = await fetchVotesMap([row.id]);
+          return ok(mapActa(row, votes.get(row.id) ?? []));
+        } catch (error) {
+          return toFailure(error, 'ERROR_CONSULTAR_ACTA');
         }
-        if (!data) {
-          return ok(null);
-        }
-        const row = data as ActaRow;
-        const votes = await fetchVotesMap([row.id]);
-        return ok(mapActa(row, votes.get(row.id) ?? []));
-      } catch (error) {
-        return toFailure(error, 'ERROR_CONSULTAR_ACTA');
-      }
+      });
     },
 
     async listByMesa(mesaId): Promise<Result<Acta[]>> {
-      try {
-        const { data, error } = await supabase
-          .from('actas')
-          .select('*')
-          .eq('mesa_id', mesaId);
-        if (error) {
-          throw error;
+      return queryWithLocalCache(`actas:mesa:${mesaId}`, async () => {
+        try {
+          const { data, error } = await supabase
+            .from('actas')
+            .select('*')
+            .eq('mesa_id', mesaId);
+          if (error) {
+            throw error;
+          }
+          return ok(await mapActas((data ?? []) as ActaRow[]));
+        } catch (error) {
+          return toFailure(error, 'ERROR_LISTAR_ACTAS');
         }
-        return ok(await mapActas((data ?? []) as ActaRow[]));
-      } catch (error) {
-        return toFailure(error, 'ERROR_LISTAR_ACTAS');
-      }
+      });
     },
 
     async listByRecinto(recintoId): Promise<Result<Acta[]>> {
-      try {
-        const { data: mesas, error: mesasError } = await supabase
-          .from('mesas')
-          .select('id')
-          .eq('recinto_id', recintoId);
-        if (mesasError) {
-          throw mesasError;
+      return queryWithLocalCache(`actas:recinto:${recintoId}`, async () => {
+        try {
+          const { data: mesas, error: mesasError } = await supabase
+            .from('mesas')
+            .select('id')
+            .eq('recinto_id', recintoId);
+          if (mesasError) {
+            throw mesasError;
+          }
+          const mesaIds = (mesas ?? []).map((row) => row.id as string);
+          if (mesaIds.length === 0) {
+            return ok([]);
+          }
+          const { data, error } = await supabase
+            .from('actas')
+            .select('*')
+            .in('mesa_id', mesaIds);
+          if (error) {
+            throw error;
+          }
+          return ok(await mapActas((data ?? []) as ActaRow[]));
+        } catch (error) {
+          return toFailure(error, 'ERROR_LISTAR_ACTAS');
         }
-        const mesaIds = (mesas ?? []).map((row) => row.id as string);
-        if (mesaIds.length === 0) {
-          return ok([]);
-        }
-        const { data, error } = await supabase
-          .from('actas')
-          .select('*')
-          .in('mesa_id', mesaIds);
-        if (error) {
-          throw error;
-        }
-        return ok(await mapActas((data ?? []) as ActaRow[]));
-      } catch (error) {
-        return toFailure(error, 'ERROR_LISTAR_ACTAS');
-      }
+      });
     },
 
     async listAll(): Promise<Result<Acta[]>> {
-      try {
-        const { data, error } = await supabase.from('actas').select('*');
-        if (error) {
-          throw error;
+      return queryWithLocalCache('actas:all', async () => {
+        try {
+          const { data, error } = await supabase.from('actas').select('*');
+          if (error) {
+            throw error;
+          }
+          return ok(await mapActas((data ?? []) as ActaRow[]));
+        } catch (error) {
+          return toFailure(error, 'ERROR_LISTAR_ACTAS');
         }
-        return ok(await mapActas((data ?? []) as ActaRow[]));
-      } catch (error) {
-        return toFailure(error, 'ERROR_LISTAR_ACTAS');
-      }
+      });
     },
 
     async save(draft, registeredBy): Promise<Result<Acta>> {
@@ -286,33 +298,35 @@ export function createSupabaseActaRepository(): ActaRepository {
     },
 
     async listConflicts(recintoId): Promise<Result<SyncConflict[]>> {
-      try {
-        let query = supabase
-          .from('acta_edit_conflicts')
-          .select('*')
-          .order('created_at', { ascending: false });
-        if (recintoId) {
-          const { data: mesas, error: mesasError } = await supabase
-            .from('mesas')
-            .select('id')
-            .eq('recinto_id', recintoId);
-          if (mesasError) {
-            throw mesasError;
+      return queryWithLocalCache(`conflicts:${recintoId ?? 'all'}`, async () => {
+        try {
+          let query = supabase
+            .from('acta_edit_conflicts')
+            .select('*')
+            .order('created_at', { ascending: false });
+          if (recintoId) {
+            const { data: mesas, error: mesasError } = await supabase
+              .from('mesas')
+              .select('id')
+              .eq('recinto_id', recintoId);
+            if (mesasError) {
+              throw mesasError;
+            }
+            const mesaIds = (mesas ?? []).map((row) => row.id as string);
+            if (mesaIds.length === 0) {
+              return ok([]);
+            }
+            query = query.in('mesa_id', mesaIds);
           }
-          const mesaIds = (mesas ?? []).map((row) => row.id as string);
-          if (mesaIds.length === 0) {
-            return ok([]);
+          const { data, error } = await query;
+          if (error) {
+            throw error;
           }
-          query = query.in('mesa_id', mesaIds);
+          return ok((data ?? []).map((row) => mapConflict(row as ConflictRow)));
+        } catch (error) {
+          return toFailure(error, 'ERROR_LISTAR_CONFLICTOS');
         }
-        const { data, error } = await query;
-        if (error) {
-          throw error;
-        }
-        return ok((data ?? []).map((row) => mapConflict(row as ConflictRow)));
-      } catch (error) {
-        return toFailure(error, 'ERROR_LISTAR_CONFLICTOS');
-      }
+      });
     },
 
     async resolveConflict(
@@ -341,7 +355,7 @@ export function createSupabaseActaRepository(): ActaRepository {
         if (source === 'local') {
           const parsed = actaDraftSchema.safeParse(draftFromConflict(conflict));
           if (!parsed.success) {
-            return failure('RESOLUCION_PAYLOAD_INVALIDO', 'No fue posible reaplicar la versión local del acta');
+            return failure('RESOLUCION_PAYLOAD_INVALIDO', 'No fue posible aplicar el acta');
           }
           await registerViaRpc(parsed.data);
         }
@@ -364,6 +378,14 @@ export function createSupabaseActaRepository(): ActaRepository {
       } catch (error) {
         return toFailure(error, 'ERROR_RESOLVER_CONFLICTO');
       }
+    },
+
+    subscribeToActas(listener) {
+      return subscribeToTableChanges('actas', listener);
+    },
+
+    subscribeToConflicts(listener) {
+      return subscribeToTableChanges('acta_edit_conflicts', listener);
     },
   };
 }

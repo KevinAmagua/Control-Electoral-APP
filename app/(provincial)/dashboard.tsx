@@ -1,125 +1,25 @@
-import { router } from 'expo-router';
-import { useCallback, useEffect, useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 
 import { palette, radius, spacing, typography } from '@/core/theme';
-import { dataContainer } from '@/data/container';
-import type { Acta } from '@/domain/acta/acta';
 import type { VoteCount } from '@/domain/acta/progress';
 import { DIGNITIES, DIGNITY_LABELS, type Dignity } from '@/domain/election/dignity';
-import type { Mesa } from '@/domain/election/mesa';
-import type { Recinto } from '@/domain/election/recinto';
-import type { ProgressReport } from '@/domain/usecases/get-progress';
 import { ActaReviewCard } from '@/presentation/acta/ActaReview';
-import { listAllCandidateOptions } from '@/presentation/acta/candidates';
 import { useActorProfile } from '@/presentation/acta/session-actor';
 import { SectionTitle } from '@/presentation/acta/ui';
 import { PrimaryButton, Screen, StatusFeedback } from '@/presentation/components';
-
-type DashboardData = {
-  report: ProgressReport;
-  actas: Acta[];
-  mesasById: Map<string, Mesa>;
-  recintosById: Map<string, Recinto>;
-  candidateNames: Record<string, string>;
-};
+import { useProgressDashboard } from '@/presentation/query/useProgressDashboard';
 
 export default function DashboardScreen() {
-  const { session, actorId, isLoading: isActorLoading, error: actorError } = useActorProfile();
-  const [data, setData] = useState<DashboardData | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const [reloadToken, setReloadToken] = useState(0);
-
-  const finishLoading = useCallback(() => {
-    void Promise.resolve().then(() => setLoading(false));
-  }, []);
-
-  const startLoading = useCallback(() => {
-    void Promise.resolve().then(() => {
-      setLoading(true);
-      setLoadError(null);
-    });
-  }, []);
-
-  useEffect(() => {
-    let active = true;
-
-    if (!actorId) {
-      finishLoading();
-      return;
-    }
-
-    startLoading();
-
-    async function load() {
-      try {
-        const progressResult = await dataContainer.useCases.getProgress({ actorId: actorId as string });
-        if (!progressResult.ok) {
-          throw new Error(progressResult.error.message);
-        }
-        const snapshotResult = await dataContainer.repositories.progress.getSnapshot({});
-        if (!snapshotResult.ok) {
-          throw new Error(snapshotResult.error.message);
-        }
-        const candidatesResult = await listAllCandidateOptions();
-        if (!candidatesResult.ok) {
-          throw new Error(candidatesResult.error.message);
-        }
-
-        const snapshot = snapshotResult.value;
-        const allowedRecintoIds = new Set(
-          progressResult.value.progress.porRecinto.map((item) => item.recintoId),
-        );
-        const mesas = snapshot.mesas.filter(
-          (mesa) => mesa.recintoId !== undefined && allowedRecintoIds.has(mesa.recintoId),
-        );
-        const mesaIds = new Set(mesas.map((mesa) => mesa.id));
-        const actas = snapshot.actas
-          .filter((acta) => mesaIds.has(acta.mesaId))
-          .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
-
-        if (active) {
-          setData({
-            report: progressResult.value,
-            actas,
-            mesasById: new Map(mesas.map((mesa) => [mesa.id, mesa])),
-            recintosById: new Map(
-              snapshot.recintos
-                .filter((recinto) => allowedRecintoIds.has(recinto.id))
-                .map((recinto) => [recinto.id, recinto]),
-            ),
-            candidateNames: candidatesResult.value.reduce<Record<string, string>>(
-              (names, candidate) => {
-                names[candidate.id] = `${candidate.organizationLabel} · ${candidate.fullName}`;
-                return names;
-              },
-              {},
-            ),
-          });
-        }
-      } catch (error) {
-        if (active) {
-          setLoadError(error instanceof Error ? error.message : 'No fue posible cargar el panel.');
-        }
-      } finally {
-        if (active) {
-          setLoading(false);
-        }
-      }
-    }
-
-    void load();
-
-    return () => {
-      active = false;
-    };
-  }, [actorId, finishLoading, reloadToken, startLoading]);
-
-  async function handleSignOut() {
-    await session.signOut();
-    router.replace('/login');
-  }
+  const { actorId, isLoading: isActorLoading, error: actorError } = useActorProfile();
+  const {
+    data,
+    isPending,
+    isFetching,
+    error,
+    refetch,
+  } = useProgressDashboard(actorId);
+  const isLoading = Boolean(actorId) && (isPending || isFetching);
+  const loadError = error instanceof Error ? error.message : null;
 
   const progress = data?.report.progress;
   const reportedPercent =
@@ -136,19 +36,19 @@ export default function DashboardScreen() {
   return (
     <Screen
       title="Panel provincial"
-      subtitle="Avance en tiempo real desde Supabase"
+      subtitle="Avance en tiempo real"
       action={
         <PrimaryButton
           label="Actualizar"
-          onPress={() => setReloadToken((value) => value + 1)}
-          disabled={loading}
+          onPress={() => void refetch()}
+          disabled={isLoading}
           tone="secondary"
         />
       }>
       {actorError || loadError ? (
         <StatusFeedback status="fallado" message={actorError ?? loadError ?? undefined} />
       ) : null}
-      {loading || isActorLoading ? (
+      {isActorLoading || isLoading ? (
         <StatusFeedback status="en_proceso" message="Consultando el avance provincial..." />
       ) : (
         <StatusFeedback
@@ -232,7 +132,7 @@ export default function DashboardScreen() {
           {data?.actas.length === 0 ? (
             <StatusFeedback status="validacion" message="Todavía no hay actas para revisar." />
           ) : (
-            data?.actas.slice(0, 3).map((acta) => {
+            data?.actas.map((acta) => {
               const mesa = data.mesasById.get(acta.mesaId);
               const recinto = mesa?.recintoId
                 ? data.recintosById.get(mesa.recintoId)
@@ -248,19 +148,8 @@ export default function DashboardScreen() {
               );
             })
           )}
-          <PrimaryButton
-            label="Revisar todas las actas"
-            onPress={() => router.push('/revision-actas')}
-          />
         </>
       ) : null}
-
-      <PrimaryButton
-        label="Gestionar recintos y coordinadores"
-        onPress={() => router.push('/gestion-recintos')}
-        tone="secondary"
-      />
-      <PrimaryButton label="Cerrar sesión" onPress={handleSignOut} tone="secondary" />
     </Screen>
   );
 }

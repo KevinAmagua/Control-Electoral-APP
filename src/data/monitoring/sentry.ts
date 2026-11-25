@@ -41,6 +41,7 @@ export function initializeSentry(): void {
     sendDefaultPii: false,
     enableNativeCrashHandling: true,
     enableAutoSessionTracking: true,
+    maxCacheItems: 60,
     tracesSampleRate: 0,
     beforeSend: (event) => scrubValue(event) as Sentry.ErrorEvent,
   });
@@ -68,4 +69,15 @@ export function captureError(error: unknown, context?: Record<string, unknown>):
   Sentry.captureException(error instanceof Error ? error : new Error(String(error)), {
     contexts: context ? { app: scrubValue(context) as Record<string, string> } : undefined,
   });
+}
+
+export async function flushSentryReports(): Promise<void> {
+  if (!initialized) {
+    return;
+  }
+  try {
+    await Sentry.flush();
+  } catch {
+    return;
+  }
 }

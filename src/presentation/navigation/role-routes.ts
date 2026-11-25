@@ -14,10 +14,14 @@ export type AppRoute =
   | '/recinto'
   | '/asignar-veedores'
   | '/nuevo-veedor'
+  | '/nueva-mesa'
   | '/conflictos'
   | '/mesas'
   | '/registrar-acta'
-  | '/estados-acta';
+  | '/estados-acta'
+  | '/perfil-provincial'
+  | '/perfil-recinto'
+  | '/perfil-veedor';
 
 const roleRoute: Record<Role, AppRoute> = {
   coordinador_provincial: '/dashboard',
@@ -31,7 +35,7 @@ export function getHomeRoute(session: Session): AppRoute {
   }
 
   if (session.mustChangePassword) {
-    return '/cambiar-clave';
+    return '/restablecer-clave';
   }
 
   return roleRoute[session.role];

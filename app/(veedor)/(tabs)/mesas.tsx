@@ -4,6 +4,7 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { palette, radius, spacing, typography } from '@/core/theme';
 import { dataContainer } from '@/data/container';
+import { captureError } from '@/data/monitoring/sentry';
 import type { Acta } from '@/domain/acta/acta';
 import { DIGNITIES, DIGNITY_LABELS, type Dignity } from '@/domain/election/dignity';
 import type { Mesa } from '@/domain/election/mesa';
@@ -28,8 +29,8 @@ function unwrap<T>(result: { ok: true; value: T } | { ok: false; error: { messag
 }
 
 export default function MesasScreen() {
-  const { session, actorId, isLoading: isActorLoading, error: actorError } = useActorProfile();
-  const { syncing, error: syncError } = useOutboxSync();
+  const { actorId, isLoading: isActorLoading, error: actorError } = useActorProfile();
+  const { syncing, error: syncError, revision } = useOutboxSync();
   const [rows, setRows] = useState<MesaRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -43,6 +44,7 @@ export default function MesasScreen() {
     void Promise.resolve().then(() => {
       setLoading(true);
       setLoadError(null);
+      setRows([]);
     });
   }, []);
 
@@ -50,6 +52,7 @@ export default function MesasScreen() {
     let active = true;
 
     if (!actorId) {
+      startLoading();
       finishLoading();
       return;
     }
@@ -110,6 +113,7 @@ export default function MesasScreen() {
           setRows(nextRows);
         }
       } catch (error) {
+        captureError(error, { scope: 'mesas.load' });
         if (active) {
           setLoadError(error instanceof Error ? error.message : 'No fue posible cargar sus mesas.');
         }
@@ -125,7 +129,7 @@ export default function MesasScreen() {
     return () => {
       active = false;
     };
-  }, [actorId, finishLoading, reloadToken, startLoading]);
+  }, [actorId, finishLoading, reloadToken, revision, startLoading]);
 
   function statusFor(row: MesaRow, dignidad: Dignity): DisplayStatus {
     const local = row.local[dignidad];
@@ -138,50 +142,32 @@ export default function MesasScreen() {
     return row.actas[dignidad]?.estado ?? null;
   }
 
-  async function handleSignOut() {
-    await session.signOut();
-    router.replace('/login');
-  }
+  const feedbackMessage = actorError ?? loadError ?? syncError ?? undefined;
+  const summary = loading || isActorLoading
+    ? 'Consultando asignaciones...'
+    : rows.length === 0
+      ? 'Sin mesas asignadas'
+      : `${rows.length} mesas asignadas`;
 
   return (
     <Screen
       title="Mesas asignadas"
-      subtitle="Solo las mesas asignadas a su usuario"
       action={
         <PrimaryButton
+          compact
           label="Actualizar"
           onPress={() => setReloadToken((value) => value + 1)}
           disabled={loading}
           tone="secondary"
         />
       }>
-      {actorError || loadError ? (
-        <StatusFeedback status="fallado" message={actorError ?? loadError ?? undefined} />
-      ) : null}
-      {syncError ? (
-        <StatusFeedback status="fallado" message={`Sincronización: ${syncError}`} />
-      ) : null}
-      {syncing ? (
-        <StatusFeedback status="en_proceso" message="Sincronizando actas pendientes..." />
-      ) : null}
-      {loading || isActorLoading ? (
-        <StatusFeedback status="en_proceso" message="Consultando asignaciones..." />
-      ) : (
-        <StatusFeedback
-          status="guardado"
-          message={
-            rows.length === 0
-              ? 'No tiene mesas asignadas activamente.'
-              : `${rows.length} mesas asignadas cargadas correctamente.`
-          }
-        />
-      )}
+      <Text style={styles.summary}>{summary}</Text>
 
-      <PrimaryButton
-        label="Ver estado de sincronización"
-        onPress={() => router.push('/estados-acta')}
-        tone="secondary"
-      />
+      {feedbackMessage ? (
+        <StatusFeedback status="fallado" message={feedbackMessage} />
+      ) : syncing ? (
+        <Text style={styles.syncing}>Sincronizando actas pendientes...</Text>
+      ) : null}
 
       {rows.map((row) => (
         <View key={row.mesa.id} style={styles.card}>
@@ -189,8 +175,11 @@ export default function MesasScreen() {
             <Text style={styles.mesaNumber}>Mesa {row.mesa.number}</Text>
             <Text style={styles.recinto}>{row.recintoName}</Text>
           </View>
-          <Text style={styles.location}>{row.mesa.location}</Text>
-          <Text style={styles.voters}>{row.mesa.registeredVoters} electores registrados</Text>
+          <Text style={styles.meta}>
+            {[row.mesa.location, `${row.mesa.registeredVoters} electores`]
+              .filter(Boolean)
+              .join(' · ')}
+          </Text>
 
           {DIGNITIES.map((dignidad) => {
             const status = statusFor(row, dignidad);
@@ -218,57 +207,59 @@ export default function MesasScreen() {
           })}
         </View>
       ))}
-
-      <PrimaryButton label="Cerrar sesión" onPress={handleSignOut} tone="secondary" />
     </Screen>
   );
 }
 
 const styles = StyleSheet.create({
+  summary: {
+    color: palette.accent,
+    fontSize: typography.caption,
+    fontWeight: '700',
+    flexShrink: 1,
+  },
+  syncing: {
+    color: palette.warning,
+    fontSize: typography.caption,
+  },
   card: {
     gap: spacing.sm,
-    padding: spacing.lg,
+    padding: spacing.md,
     borderRadius: radius.md,
-    borderWidth: 2,
+    borderWidth: 1,
     borderColor: palette.border,
     backgroundColor: palette.surface,
   },
   header: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     justifyContent: 'space-between',
-    gap: spacing.md,
+    gap: spacing.sm,
   },
   mesaNumber: {
     color: palette.primary,
     fontSize: typography.heading,
     fontWeight: '700',
+    flexShrink: 0,
   },
   recinto: {
     color: palette.textMuted,
     fontSize: typography.caption,
-    minWidth: 0,
-    flexShrink: 1,
+    flex: 1,
     textAlign: 'right',
   },
-  location: {
-    color: palette.text,
-    fontSize: typography.body,
-  },
-  voters: {
+  meta: {
     color: palette.textMuted,
     fontSize: typography.caption,
   },
   dignityRow: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
     alignItems: 'center',
     justifyContent: 'space-between',
-    gap: spacing.md,
-    minHeight: 56,
+    gap: spacing.sm,
+    minHeight: 48,
     paddingHorizontal: spacing.md,
-    borderRadius: radius.md,
+    borderRadius: radius.sm,
     backgroundColor: palette.background,
     borderWidth: 1,
     borderColor: palette.border,

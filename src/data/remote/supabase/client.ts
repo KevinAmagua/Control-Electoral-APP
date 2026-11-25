@@ -8,6 +8,8 @@ export const SUPABASE_ANON_KEY =
   'sb_publishable_8h-4Av1w5l-ftlBAE8RWCA_15nto0CB';
 export const AUTH_REDIRECT_URL =
   process.env.EXPO_PUBLIC_AUTH_REDIRECT_URL ?? 'controlectoraladn://callback';
+export const CONFIRM_EMAIL_REDIRECT_URL =
+  process.env.EXPO_PUBLIC_CONFIRM_EMAIL_REDIRECT_URL ?? 'controlectoraladn://confirmar-correo';
 
 export const supabase: SupabaseClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
   auth: {
@@ -26,8 +28,9 @@ export async function getCurrentAuthUser(): Promise<{
   id: string;
   email: string | null;
 } | null> {
-  const { data } = await supabase.auth.getUser();
-  return data.user ? { id: data.user.id, email: data.user.email ?? null } : null;
+  const { data } = await supabase.auth.getSession();
+  const user = data.session?.user;
+  return user ? { id: user.id, email: user.email ?? null } : null;
 }
 
 export async function getCurrentAuthUserId(): Promise<string | null> {

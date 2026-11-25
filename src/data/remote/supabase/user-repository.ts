@@ -2,6 +2,9 @@ import { failure, ok, type Result } from '@/core/result/result';
 import type { UserProfile } from '@/domain/user/profile';
 import type { UserRepository, CreateUserRecord } from '@/domain/repositories/user-repository';
 
+import * as Linking from 'expo-linking';
+
+import { queryWithLocalCache } from '../../local/sqliteClient';
 import { supabase } from './client';
 import { toFailure } from './errors';
 import { mapProfile, type ProfileRow } from './mappers';
@@ -26,10 +29,13 @@ type FunctionErrorBody = {
 };
 
 type FunctionErrorContext = {
+  json?: () => Promise<unknown>;
   clone?: () => { json: () => Promise<unknown> };
 };
 
 const FUNCTION_ERROR_MESSAGES: Record<string, string> = {
+  METODO_NO_PERMITIDO: 'Método no permitido',
+  CONFIGURACION_INVALIDA: 'Configuración del servidor inválida',
   SOLICITUD_INVALIDA: 'Cuerpo de solicitud inválido',
   ROL_INVALIDO: 'Rol inválido',
   CEDULA_INVALIDA: 'Cédula ecuatoriana inválida',
@@ -48,12 +54,24 @@ const FUNCTION_ERROR_MESSAGES: Record<string, string> = {
   PERFIL_NO_ENCONTRADO: 'No se encontró el perfil del usuario',
   CORREO_YA_REGISTRADO: 'Ya existe una cuenta con ese correo',
   CEDULA_YA_REGISTRADA: 'Ya existe una cuenta con esa cédula',
+  REDIRECT_INVALIDO: 'La URL de retorno no es válida',
   ERROR_CONSULTAR_USUARIO: 'No fue posible validar el usuario',
+  ERROR_LIMPIAR_USUARIO: 'No fue posible preparar la cuenta para la invitación',
   ERROR_INVITAR_USUARIO: 'No fue posible enviar la invitación',
+  ERROR_SMTP: 'El servidor de correo no está configurado correctamente. Revise SMTP en Supabase.',
+  LIMITE_CORREOS: 'Se alcanzó el límite de correos por hora. Intente más tarde',
   ERROR_ASIGNAR_CLAVE: 'No fue posible asignar la contraseña temporal',
   ERROR_CREAR_PERFIL: 'No fue posible crear el perfil del usuario',
   ERROR_CREAR_USUARIO: 'No fue posible crear el usuario',
 };
+
+function getConfirmRedirectUrl(): string | undefined {
+  try {
+    return Linking.createURL('/confirmar-correo');
+  } catch {
+    return undefined;
+  }
+}
 
 function isFunctionErrorBody(value: unknown): value is FunctionErrorBody {
   return typeof value === 'object' && value !== null;
@@ -70,14 +88,19 @@ function functionFailure(value: unknown, fallbackCode: string): Result<never> {
 
 async function readFunctionError(error: unknown): Promise<unknown> {
   const context = (error as { context?: FunctionErrorContext }).context;
-  if (!context?.clone) {
+  if (!context) {
     return null;
   }
-  try {
-    return await context.clone().json();
-  } catch {
-    return null;
+  if (typeof context.json === 'function') {
+    const direct = await context.json().catch(() => null);
+    if (direct) {
+      return direct;
+    }
   }
+  if (typeof context.clone === 'function') {
+    return await context.clone().json().catch(() => null);
+  }
+  return null;
 }
 
 async function fetchOne(column: 'id' | 'email' | 'cedula', value: string) {
@@ -100,7 +123,7 @@ export function createSupabaseUserRepository(): SupabaseUserRepository {
   ): Promise<Result<CreatedUserResult>> => {
     try {
       const { data, error } = await supabase.functions.invoke<CreateUserResponse>('create-user', {
-        body: input,
+        body: { ...input, redirectTo: getConfirmRedirectUrl() },
       });
       if (error) {
         return functionFailure(await readFunctionError(error), 'ERROR_CREAR_USUARIO');
@@ -120,43 +143,52 @@ export function createSupabaseUserRepository(): SupabaseUserRepository {
 
   return {
     async getById(id): Promise<Result<UserProfile | null>> {
-      try {
-        return ok(await fetchOne('id', id));
-      } catch (error) {
-        return toFailure(error, 'ERROR_CONSULTAR_USUARIO');
-      }
+      return queryWithLocalCache(`profile:${id}`, async () => {
+        try {
+          return ok(await fetchOne('id', id));
+        } catch (error) {
+          return toFailure(error, 'ERROR_CONSULTAR_USUARIO');
+        }
+      });
     },
 
     async getByEmail(email): Promise<Result<UserProfile | null>> {
-      try {
-        return ok(await fetchOne('email', email.trim().toLowerCase()));
-      } catch (error) {
-        return toFailure(error, 'ERROR_CONSULTAR_USUARIO');
-      }
+      const normalized = email.trim().toLowerCase();
+      return queryWithLocalCache(`profile:email:${normalized}`, async () => {
+        try {
+          return ok(await fetchOne('email', normalized));
+        } catch (error) {
+          return toFailure(error, 'ERROR_CONSULTAR_USUARIO');
+        }
+      });
     },
 
     async getByCedula(cedula): Promise<Result<UserProfile | null>> {
-      try {
-        return ok(await fetchOne('cedula', cedula));
-      } catch (error) {
-        return toFailure(error, 'ERROR_CONSULTAR_USUARIO');
-      }
+      return queryWithLocalCache(`profile:cedula:${cedula}`, async () => {
+        try {
+          return ok(await fetchOne('cedula', cedula));
+        } catch (error) {
+          return toFailure(error, 'ERROR_CONSULTAR_USUARIO');
+        }
+      });
     },
 
     async listByRecinto(recintoId): Promise<Result<UserProfile[]>> {
-      try {
-        const { data, error } = await supabase
-          .from('profiles')
-          .select('*')
-          .eq('recinto_id', recintoId)
-          .order('last_name', { ascending: true });
-        if (error) {
-          throw error;
+      return queryWithLocalCache(`profiles:recinto:${recintoId}`, async () => {
+        try {
+          const { data, error } = await supabase
+            .from('profiles')
+            .select('*')
+            .eq('recinto_id', recintoId)
+            .order('last_name', { ascending: true });
+          if (error) {
+            throw error;
+          }
+          return ok((data ?? []).map((row) => mapProfile(row as ProfileRow)));
+        } catch (error) {
+          return toFailure(error, 'ERROR_LISTAR_USUARIOS');
         }
-        return ok((data ?? []).map((row) => mapProfile(row as ProfileRow)));
-      } catch (error) {
-        return toFailure(error, 'ERROR_LISTAR_USUARIOS');
-      }
+      });
     },
 
     createWithTemporaryPassword,

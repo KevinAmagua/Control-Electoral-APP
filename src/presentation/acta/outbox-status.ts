@@ -92,7 +92,7 @@ export async function listLocalActaOperations(): Promise<Result<LocalActaOperati
   } catch (error) {
     return failure(
       'ERROR_LEER_COLA_LOCAL',
-      error instanceof Error ? error.message : 'No fue posible leer la cola local',
+      error instanceof Error ? error.message : 'No fue posible leer los registros',
     );
   }
 }

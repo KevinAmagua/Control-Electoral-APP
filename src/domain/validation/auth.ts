@@ -13,6 +13,9 @@ export const recoverySchema = z.object({
 
 export const confirmEmailSchema = z.object({
   email: emailSchema,
+  token: z.string().refine((value) => value === '' || /^\d{6}$/.test(value), {
+    message: 'Ingrese el código de 6 dígitos',
+  }),
 });
 
 export const passwordChangeSchema = z
@@ -47,3 +50,13 @@ export const passwordResetSchema = z
     path: ['confirmPassword'],
     message: 'Las contraseñas no coinciden',
   });
+
+export function isRecoveryCallbackUrl(url: string): boolean {
+  let decoded = url;
+  try {
+    decoded = decodeURIComponent(url);
+  } catch {
+    decoded = url;
+  }
+  return /(?:^|[?&#])type=recovery(?:[&#]|$)/i.test(decoded);
+}

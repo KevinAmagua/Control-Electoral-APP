@@ -90,5 +90,5 @@ export async function handleVersionConflict(
     return recorded;
   }
 
-  return failure('CONFLICTO_EDICION_OFFLINE', 'El acta fue modificada desde otro dispositivo');
+  return failure('CONFLICTO_EDICION_OFFLINE', 'El acta fue modificada posteriormente');
 }

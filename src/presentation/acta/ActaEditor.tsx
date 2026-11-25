@@ -1,13 +1,28 @@
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useCallback, useEffect, useState } from 'react';
-import { Controller, useForm, useWatch, type FieldPath } from 'react-hook-form';
-import { StyleSheet, Text, View } from 'react-native';
+import {
+  Controller,
+  useForm,
+  useWatch,
+  type FieldErrors,
+  type FieldPath,
+} from 'react-hook-form';
+import { Platform, StyleSheet, Text, View } from 'react-native';
 
 import type { Result } from '@/core/result/result';
 import { palette, radius, spacing, typography } from '@/core/theme';
 import { dataContainer } from '@/data/container';
+import { formatRecintoLocation } from '@/data/evidence/location';
+import {
+  cacheReferenceData,
+  getLocalActaOperationDetail,
+  readCachedReference,
+  type LocalActaOperationDetail,
+} from '@/data/local/sqliteClient';
+import { captureError } from '@/data/monitoring/sentry';
 import { queueActaForSync } from '@/data/sync/outbox-manager';
 import type { Acta, ActaDraft, VoteDetail } from '@/domain/acta/acta';
+import type { Assignment } from '@/domain/election/assignment';
 import { DIGNITIES, DIGNITY_LABELS, type Dignity } from '@/domain/election/dignity';
 import type { Mesa } from '@/domain/election/mesa';
 import type { Recinto } from '@/domain/election/recinto';
@@ -75,6 +90,26 @@ function unwrap<T>(result: Result<T>): T {
   return result.value;
 }
 
+function firstFieldError(errors: FieldErrors<ActaFormValues>): string | null {
+  for (const field of ['totalSufragantes', 'votosBlancos', 'votosNulos'] as const) {
+    const message = errors[field]?.message;
+    if (typeof message === 'string') {
+      return message;
+    }
+  }
+
+  const voteErrors = errors.votos as unknown as Record<string, { message?: string }> | undefined;
+  if (voteErrors) {
+    for (const item of Object.values(voteErrors)) {
+      if (typeof item?.message === 'string') {
+        return item.message;
+      }
+    }
+  }
+
+  return null;
+}
+
 function emptyFormValues(): ActaFormValues {
   return {
     totalSufragantes: '',
@@ -100,6 +135,36 @@ function formValuesFromActa(acta: Acta | null, candidates: CandidateOption[]): A
   };
 }
 
+function actaFromLocalOperation(detail: LocalActaOperationDetail | null): Acta | null {
+  const payload = detail?.payload;
+  if (!detail || !payload) {
+    return null;
+  }
+
+  return {
+    id: detail.actaId,
+    mesaId: detail.mesaId,
+    dignidad: detail.dignity,
+    version: detail.version,
+    estado: 'en_proceso',
+    registradoPor: null,
+    corregidoPor: null,
+    gpsLat: payload.gpsLat,
+    gpsLng: payload.gpsLng,
+    gpsPrecision: payload.gpsPrecision,
+    fotoPath: payload.fotoPath,
+    totalSufragantes: payload.totalSufragantes,
+    votosValidos: payload.votosValidos,
+    votosBlancos: payload.votosBlancos,
+    votosNulos: payload.votosNulos,
+    observaciones: payload.observaciones ?? null,
+    operacionClienteId: detail.operationId,
+    createdAt: detail.createdAt,
+    updatedAt: detail.updatedAt,
+    votos: payload.votes,
+  };
+}
+
 export function ActaEditor({
   mesaId,
   initialDignidad,
@@ -117,6 +182,7 @@ export function ActaEditor({
   const [assignmentAllowed, setAssignmentAllowed] = useState(false);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [offlineMode, setOfflineMode] = useState(false);
   const [evidence, setEvidence] = useState<ConfirmedEvidence | null>(null);
   const [feedback, setFeedback] = useState<Feedback | null>(null);
   const [saving, setSaving] = useState(false);
@@ -125,6 +191,7 @@ export function ActaEditor({
   const [localActaId, setLocalActaId] = useState(createUuid);
   const [expectedVersion, setExpectedVersion] = useState(0);
   const [pendingOperationId, setPendingOperationId] = useState<string | null>(null);
+  const [reloadToken, setReloadToken] = useState(0);
 
   const {
     control,
@@ -169,6 +236,12 @@ export function ActaEditor({
     });
   }, [reset]);
 
+  const prepareNewCorrection = useCallback(() => {
+    setFeedback(null);
+    resetEditorState();
+    setReloadToken((value) => value + 1);
+  }, [resetEditorState]);
+
   const finishLoading = useCallback(() => {
     void Promise.resolve().then(() => setLoading(false));
   }, []);
@@ -195,51 +268,121 @@ export function ActaEditor({
     startLoading();
 
     async function load() {
+      let usedOfflineCache = false;
+
       try {
         const { territory, assignments, actas } = dataContainer.repositories;
-        const loadedMesa = unwrap(await territory.getMesa(mesaId));
-        if (!loadedMesa) {
-          throw new Error('La mesa no existe.');
+        let loadedMesa: Mesa | null;
+        let loadedRecinto: Recinto | null;
+        let loadedAssignments: Assignment[];
+        let loadedActa: Acta | null;
+        let loadedCandidates: CandidateOption[];
+
+        try {
+          loadedMesa = unwrap(await territory.getMesa(mesaId));
+          if (!loadedMesa) {
+            throw new Error('La mesa no existe.');
+          }
+          const recintoId = loadedMesa.recintoId ?? fallbackRecintoId;
+          if (!recintoId) {
+            throw new Error('La mesa no tiene un recinto asociado.');
+          }
+          loadedRecinto = unwrap(await territory.getRecinto(recintoId));
+          if (!loadedRecinto) {
+            throw new Error('El recinto de la mesa no existe.');
+          }
+          loadedAssignments = unwrap(await assignments.listByMesa(mesaId));
+          loadedActa = unwrap(await actas.getByMesaAndDignidad(mesaId, dignidad));
+          loadedCandidates = unwrap(await listCandidateOptions(dignidad));
+
+          await cacheReferenceData([
+            { key: `mesa:${mesaId}`, value: loadedMesa },
+            { key: `recinto:${recintoId}`, value: loadedRecinto },
+            { key: `assignments:${mesaId}`, value: loadedAssignments },
+            { key: `acta:${mesaId}:${dignidad}`, value: loadedActa },
+            { key: `candidates:${dignidad}`, value: loadedCandidates },
+          ]);
+        } catch (remoteError) {
+          usedOfflineCache = true;
+          loadedMesa = await readCachedReference<Mesa>(`mesa:${mesaId}`);
+          const cachedRecintoId = loadedMesa?.recintoId ?? fallbackRecintoId;
+          loadedRecinto = cachedRecintoId
+            ? await readCachedReference<Recinto>(`recinto:${cachedRecintoId}`)
+            : null;
+          loadedAssignments =
+            (await readCachedReference<Assignment[]>(`assignments:${mesaId}`)) ?? [];
+          loadedActa = await readCachedReference<Acta>(`acta:${mesaId}:${dignidad}`);
+          loadedCandidates =
+            (await readCachedReference<CandidateOption[]>(`candidates:${dignidad}`)) ?? [];
+
+          if (
+            !loadedMesa ||
+            !loadedRecinto ||
+            loadedAssignments.length === 0 ||
+            loadedCandidates.length === 0
+          ) {
+            throw remoteError;
+          }
         }
-        const recintoId = loadedMesa.recintoId ?? fallbackRecintoId;
-        if (!recintoId) {
-          throw new Error('La mesa no tiene un recinto asociado.');
-        }
-        const loadedRecinto = unwrap(await territory.getRecinto(recintoId));
-        if (!loadedRecinto) {
-          throw new Error('El recinto de la mesa no existe.');
-        }
-        const loadedAssignments = unwrap(await assignments.listByMesa(mesaId));
+
         const allowed = loadedAssignments.some(
-          (assignment) => assignment.active && !assignment.unassignedAt && assignment.veedorId === actorId,
+          (assignment) =>
+            assignment.active && !assignment.unassignedAt && assignment.veedorId === actorId,
         );
         if (!allowed) {
           throw new Error('No tiene una asignación activa sobre esta mesa.');
         }
-        const loadedActa = unwrap(await actas.getByMesaAndDignidad(mesaId, dignidad));
+
         const localOperations = unwrap(await listLocalActaOperations());
         const localOperation = localOperations.find(
           (operation) => operation.mesaId === mesaId && operation.dignity === dignidad,
         );
-        const loadedCandidates = unwrap(await listCandidateOptions(dignidad));
+        const localDetail = localOperation
+          ? await getLocalActaOperationDetail(localOperation.operationId)
+          : null;
+        const editableLocalActa = localOperation?.status === 'fallado'
+          ? actaFromLocalOperation(localDetail)
+          : null;
 
         if (!active) {
           return;
         }
         setMesa(loadedMesa);
         setRecinto(loadedRecinto);
-        setExistingActa(loadedActa);
-        setLocalActaId(localOperation?.actaId ?? loadedActa?.id ?? createUuid());
-        setExpectedVersion(loadedActa?.version ?? localOperation?.version ?? 0);
+        setExistingActa(editableLocalActa ?? loadedActa);
+        setOfflineMode(usedOfflineCache);
+        setOperationId(
+          editableLocalActa && localOperation ? localOperation.operationId : createUuid(),
+        );
+        setLocalActaId(editableLocalActa?.id ?? loadedActa?.id ?? createUuid());
+        setExpectedVersion(
+          editableLocalActa && localOperation
+            ? Math.max(localOperation.version - 1, 0)
+            : (loadedActa?.version ?? 0),
+        );
         setPendingOperationId(
           localOperation && (localOperation.status === 'pendiente' || localOperation.status === 'en_proceso')
             ? localOperation.operationId
             : null,
         );
+        setEvidence(
+          editableLocalActa
+            ? {
+                fotoPath: editableLocalActa.fotoPath,
+                gpsLat: editableLocalActa.gpsLat,
+                gpsLng: editableLocalActa.gpsLng,
+                gpsPrecision: editableLocalActa.gpsPrecision,
+                distanceMeters: 0,
+                outsideRadius: false,
+                blurScore: 0,
+              }
+            : null,
+        );
         setCandidates(loadedCandidates);
         setAssignmentAllowed(true);
-        reset(formValuesFromActa(loadedActa, loadedCandidates));
+        reset(formValuesFromActa(editableLocalActa ?? loadedActa, loadedCandidates));
       } catch (error) {
+        captureError(error, { scope: 'acta.load', mesaId, dignidad });
         if (active) {
           setAssignmentAllowed(false);
           setLoadError(error instanceof Error ? error.message : 'No fue posible cargar el acta.');
@@ -256,7 +399,7 @@ export function ActaEditor({
     return () => {
       active = false;
     };
-  }, [actorId, dignidad, fallbackRecintoId, finishLoading, mesaId, reset, startLoading]);
+  }, [actorId, dignidad, fallbackRecintoId, finishLoading, mesaId, reloadToken, reset, startLoading]);
 
   function buildDraft(values: ActaFormValues): ActaDraft {
     const votos: VoteDetail[] = candidates.map((candidate) => ({
@@ -294,10 +437,12 @@ export function ActaEditor({
           : { status: 'validacion', message: validation.error.message },
       );
     },
-    () => {
+    (errors) => {
       setFeedback({
         status: 'validacion',
-        message: 'Revise el conteo: use enteros no negativos y cuadre con el total de sufragantes.',
+        message:
+          firstFieldError(errors) ??
+          'Revise el conteo: use enteros no negativos y cuadre con el total de sufragantes.',
       });
     },
   );
@@ -305,7 +450,13 @@ export function ActaEditor({
   const onSave = handleSubmit(
     async (values) => {
       if (!evidence) {
-        setFeedback({ status: 'validacion', message: 'Capture la fotografía del acta antes de guardar.' });
+        setFeedback({
+          status: 'validacion',
+          message:
+            Platform.OS === 'web'
+              ? 'Abra la app en Expo Go en un dispositivo móvil para capturar la foto del acta.'
+              : 'Capture la fotografía del acta antes de guardar.',
+        });
         return;
       }
       if (!assignmentAllowed) {
@@ -330,66 +481,99 @@ export function ActaEditor({
         return;
       }
 
-      setSaving(true);
-      setFeedback({ status: 'en_proceso', message: 'Guardando el acta en el dispositivo...' });
-      const draft = validation.value;
-      const queued = await queueActaForSync({
-        operationId: draft.operacionClienteId,
-        actaId: existingActa?.id ?? localActaId,
-        mesaId: draft.mesaId,
-        dignity: draft.dignidad,
-        expectedVersion: draft.expectedVersion,
-        totalSufragantes: draft.totalSufragantes,
-        votosValidos: draft.votosValidos,
-        votosBlancos: draft.votosBlancos,
-        votosNulos: draft.votosNulos,
-        gpsLat: draft.gpsLat,
-        gpsLng: draft.gpsLng,
-        gpsPrecision: draft.gpsPrecision,
-        fotoPath: draft.fotoPath,
-        observaciones: draft.observaciones,
-        votes: draft.votos,
-      });
+      try {
+        setSaving(true);
+        setFeedback({ status: 'en_proceso', message: 'Guardando el acta...' });
+        const draft = validation.value;
+        const queued = await queueActaForSync({
+          operationId: draft.operacionClienteId,
+          actaId: existingActa?.id ?? localActaId,
+          mesaId: draft.mesaId,
+          dignity: draft.dignidad,
+          expectedVersion: draft.expectedVersion,
+          totalSufragantes: draft.totalSufragantes,
+          votosValidos: draft.votosValidos,
+          votosBlancos: draft.votosBlancos,
+          votosNulos: draft.votosNulos,
+          gpsLat: draft.gpsLat,
+          gpsLng: draft.gpsLng,
+          gpsPrecision: draft.gpsPrecision,
+          fotoPath: draft.fotoPath,
+          observaciones: draft.observaciones,
+          votes: draft.votos,
+        });
 
-      if (!queued.ok) {
-        setFeedback({ status: 'fallado', message: queued.error.message });
-        setSaving(false);
-        return;
-      }
+        if (!queued.ok) {
+          setFeedback({ status: 'fallado', message: queued.error.message });
+          return;
+        }
 
-      setSaved(true);
-      setFeedback({
-        status: 'guardado_local',
-        message: 'Guardado en el dispositivo. Sincronización pendiente',
-      });
-      const synced = await flush();
-      const localOperations = await listLocalActaOperations();
-      const ownOperation = localOperations.ok
-        ? localOperations.value.find((operation) => operation.operationId === queued.value)
-        : null;
-      const sentToServer =
-        ownOperation?.status === 'guardado' || (!localOperations.ok && synced.ok && synced.value > 0);
-
-      if (sentToServer) {
-        setFeedback({ status: 'enviado', message: 'Guardado y enviado al servidor' });
-      } else {
-        const detail = !synced.ok ? `. ${synced.error.message}` : '';
+        setSaved(true);
         setFeedback({
           status: 'guardado_local',
-          message: `Guardado en el dispositivo. Sincronización pendiente${detail}`,
+          message: 'Guardado local. Sincronización pendiente.',
         });
+        const synced = await flush();
+        const localOperations = await listLocalActaOperations();
+        const ownOperation = localOperations.ok
+          ? localOperations.value.find((operation) => operation.operationId === queued.value)
+          : null;
+        const sentToServer =
+          ownOperation?.status === 'guardado' || (!localOperations.ok && synced.ok && synced.value > 0);
+
+        if (sentToServer) {
+          setFeedback({ status: 'enviado', message: 'Enviado.' });
+        } else {
+          const detail = !synced.ok ? `. ${synced.error.message}` : '';
+          setFeedback({
+            status: 'guardado_local',
+            message: `Guardado local. Sincronización pendiente${detail}`,
+          });
+        }
+      } catch (error) {
+        captureError(error, { scope: 'acta.save' });
+        setFeedback({
+          status: 'fallado',
+          message: error instanceof Error ? error.message : 'No fue posible registrar el acta.',
+        });
+      } finally {
+        setSaving(false);
       }
-      setSaving(false);
     },
-    () => {
+    (errors) => {
       setFeedback({
         status: 'validacion',
-        message: 'Revise el conteo: use enteros no negativos y cuadre con el total de sufragantes.',
+        message:
+          firstFieldError(errors) ??
+          'Revise el conteo: use enteros no negativos y cuadre con el total de sufragantes.',
       });
     },
   );
 
   const isBusy = loading || isActorLoading || saving;
+  const saveBlockReason = (() => {
+    if (isBusy || saved) {
+      return null;
+    }
+    if (!assignmentAllowed) {
+      return 'No tiene una asignación activa sobre esta mesa.';
+    }
+    if (candidates.length === 0) {
+      return 'No hay candidatos activos para esta dignidad.';
+    }
+    if (pendingOperationId) {
+      return 'Esta acta ya tiene una operación pendiente. Revise su estado antes de guardar otra.';
+    }
+    if (!evidence) {
+      return Platform.OS === 'web'
+        ? 'Abra la app en Expo Go en un dispositivo móvil para capturar la foto del acta.'
+        : 'Capture la fotografía del acta antes de guardar.';
+    }
+    if (!isValid) {
+      return 'Revise el conteo: use enteros no negativos y cuadre con el total de sufragantes.';
+    }
+    return null;
+  })();
   const radiusLimit = recinto && recinto.radiusMeters > 0 ? recinto.radiusMeters : 300;
   const showEvidenceAlert =
     evidence?.outsideRadius === true || (evidence?.distanceMeters ?? 0) > radiusLimit;
@@ -419,7 +603,13 @@ export function ActaEditor({
       {pendingOperationId ? (
         <StatusFeedback
           status="validacion"
-          message={`Operación pendiente en el dispositivo: ${pendingOperationId}`}
+          message={`Registro pendiente: ${pendingOperationId}`}
+        />
+      ) : null}
+      {offlineMode ? (
+        <StatusFeedback
+          status="guardado_local"
+          message="Modo offline: usando datos locales guardados. El acta quedará en la cola de sincronización."
         />
       ) : null}
       {syncError ? (
@@ -527,12 +717,16 @@ export function ActaEditor({
                   </Text>
                 }
               />
+              <InfoRow
+                label="Ubicación del recinto"
+                value={<Text style={styles.value}>{formatRecintoLocation(recinto)}</Text>}
+              />
             </View>
           ) : null}
           {showEvidenceAlert ? (
             <StatusFeedback
               status="validacion"
-              message={`La captura está a ${evidence?.distanceMeters} m del recinto (límite ${radiusLimit} m). Verifique la ubicación.`}
+              message={`La captura está a ${evidence?.distanceMeters} m del recinto (límite ${radiusLimit} m). Ubicación del recinto: ${formatRecintoLocation(recinto)}. Verifique la ubicación.`}
             />
           ) : null}
           {evidence && evidence.blurScore < 75 ? (
@@ -648,6 +842,9 @@ export function ActaEditor({
         subtitle="Revise el cuadre antes de registrar el acta."
       />
       <View style={styles.actions}>
+        {saveBlockReason ? (
+          <StatusFeedback status="validacion" message={`No se puede guardar: ${saveBlockReason}`} />
+        ) : null}
         <PrimaryButton
           label="Validar acta"
           onPress={() => {
@@ -662,16 +859,16 @@ export function ActaEditor({
             void onSave();
           }}
           isLoading={saving}
-          disabled={
-            isBusy ||
-            saved ||
-            !isValid ||
-            pendingOperationId !== null ||
-            !evidence ||
-            !assignmentAllowed ||
-            candidates.length === 0
-          }
+          disabled={isBusy || saved}
         />
+        {saved ? (
+          <PrimaryButton
+            label="Preparar otra corrección"
+            onPress={prepareNewCorrection}
+            tone="secondary"
+            disabled={isBusy}
+          />
+        ) : null}
         <PrimaryButton label="Ver estados" onPress={onViewStatus} tone="secondary" />
         <PrimaryButton label="Volver a mesas" onPress={onDone} tone="secondary" />
       </View>

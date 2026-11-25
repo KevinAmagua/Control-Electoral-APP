@@ -18,4 +18,6 @@ export interface ActaRepository {
     resolution: unknown,
     reviewedBy: string,
   ): Promise<Result<SyncConflict>>;
+  subscribeToActas(listener: () => void): () => void;
+  subscribeToConflicts(listener: () => void): () => void;
 }

@@ -1,11 +1,15 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import NetInfo from '@react-native-community/netinfo';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef } from 'react';
 import type { ReactNode } from 'react';
+import { AppState } from 'react-native';
 
 import { ok, type Result } from '@/core/result/result';
 import { dataContainer } from '@/data/container';
-import { setSentryUser } from '@/data/monitoring/sentry';
+import type { OutboxSnapshot } from '@/data/local/sqliteClient';
+import { flushSentryReports, setSentryUser } from '@/data/monitoring/sentry';
 import { getCurrentAuthUser, supabase } from '@/data/remote/supabase/client';
 import type { Session as DomainSession } from '@/domain/auth/session';
+import { useAppStore } from '@/presentation/state/appStore';
 
 const guestSession: DomainSession = {
   status: 'guest',
@@ -18,6 +22,8 @@ type SessionContextValue = DomainSession & {
   userId: string | null;
   email: string | null;
   isLoading: boolean;
+  isOnline: boolean;
+  outbox: OutboxSnapshot;
   refresh: () => Promise<Result<DomainSession>>;
   signIn: (email: string, password: string) => Promise<Result<DomainSession>>;
   signOut: () => Promise<Result<void>>;
@@ -30,22 +36,32 @@ type SessionContextValue = DomainSession & {
 const SessionContext = createContext<SessionContextValue | null>(null);
 
 export function SessionProvider({ children }: { children: ReactNode }) {
-  const [session, setSession] = useState<DomainSession>(guestSession);
-  const [userId, setUserId] = useState<string | null>(null);
-  const [email, setEmail] = useState<string | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
+  const status = useAppStore((state) => state.status);
+  const role = useAppStore((state) => state.role);
+  const mustChangePassword = useAppStore((state) => state.mustChangePassword);
+  const emailVerified = useAppStore((state) => state.emailVerified);
+  const userId = useAppStore((state) => state.userId);
+  const email = useAppStore((state) => state.email);
+  const isLoading = useAppStore((state) => state.isLoading);
+  const isOnline = useAppStore((state) => state.isOnline);
+  const outbox = useAppStore((state) => state.outbox);
+  const setSession = useAppStore((state) => state.setSession);
+  const setAuthUser = useAppStore((state) => state.setAuthUser);
+  const setLoading = useAppStore((state) => state.setLoading);
+  const setOnline = useAppStore((state) => state.setOnline);
+  const setOutbox = useAppStore((state) => state.setOutbox);
+  const resetStore = useAppStore((state) => state.reset);
+  const wasOnline = useRef<boolean | null>(null);
 
   const clearSessionState = useCallback(() => {
-    setSession(guestSession);
-    setUserId(null);
-    setEmail(null);
+    resetStore();
     setSentryUser(null);
-  }, []);
+  }, [resetStore]);
 
   const applySession = useCallback(
     async (result: Result<DomainSession | null>): Promise<Result<DomainSession>> => {
       if (!result.ok) {
-        if (result.error.code === 'CORREO_NO_VERIFICADO') {
+        if (result.error.code === 'CORREO_NO_VERIFICADO' || result.error.code === 'CUENTA_INACTIVA') {
           clearSessionState();
         }
         return result;
@@ -54,29 +70,32 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       const next = result.value ?? guestSession;
       const authUser = next.status === 'authenticated' ? await getCurrentAuthUser() : null;
       setSession(next);
-      setUserId(authUser?.id ?? null);
-      setEmail(authUser?.email ?? null);
+      setAuthUser(authUser?.id ?? null, authUser?.email ?? null);
       return ok(next);
     },
-    [clearSessionState],
+    [clearSessionState, setAuthUser, setSession],
   );
 
   useEffect(() => {
-    setSentryUser(session.status === 'authenticated' ? userId : null);
-  }, [session.status, userId]);
+    setSentryUser(status === 'authenticated' ? userId : null);
+  }, [status, userId]);
 
   const refresh = useCallback(async (): Promise<Result<DomainSession>> => {
-    setIsLoading(true);
     try {
       const result = await dataContainer.repositories.auth.getCurrentSession();
       return await applySession(result);
     } finally {
-      setIsLoading(false);
+      setLoading(false);
     }
-  }, [applySession]);
+  }, [applySession, setLoading]);
 
   useEffect(() => {
-    const { data } = supabase.auth.onAuthStateChange(() => {
+    const unsubscribeAuth = supabase.auth.onAuthStateChange((event) => {
+      if (event === 'SIGNED_OUT') {
+        clearSessionState();
+        setLoading(false);
+        return;
+      }
       void refresh();
     });
 
@@ -85,20 +104,78 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     });
 
     return () => {
-      data.subscription.unsubscribe();
+      unsubscribeAuth.data.subscription.unsubscribe();
+    };
+  }, [clearSessionState, refresh, setLoading]);
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (state) => {
+      if (state === 'active') {
+        void refresh();
+        void dataContainer.outbox.flushPending();
+        void flushSentryReports();
+      }
+    });
+
+    return () => {
+      subscription.remove();
     };
   }, [refresh]);
 
   useEffect(() => {
-    if (session.status !== 'authenticated') {
+    let active = true;
+    const applyNetworkState = (connected: boolean) => {
+      const previous = wasOnline.current;
+      wasOnline.current = connected;
+      setOnline(connected);
+      if (connected && previous === false) {
+        void refresh();
+        void dataContainer.outbox.flushPending();
+        void flushSentryReports();
+      }
+    };
+
+    void NetInfo.fetch().then((state) => {
+      if (active) {
+        applyNetworkState(Boolean(state.isConnected));
+        void flushSentryReports();
+      }
+    });
+    const unsubscribeNetwork = NetInfo.addEventListener((state) => {
+      applyNetworkState(Boolean(state.isConnected));
+    });
+
+    return () => {
+      active = false;
+      unsubscribeNetwork();
+    };
+  }, [refresh, setOnline]);
+
+  useEffect(() => {
+    if (status !== 'authenticated') {
       return;
     }
 
-    void dataContainer.outbox.start();
+    const updateOutbox = async () => {
+      const snapshot = await dataContainer.outbox.refreshSnapshot();
+      if (snapshot) {
+        setOutbox(snapshot);
+      }
+    };
+
+    const unsubscribeOutbox = dataContainer.outbox.subscribe(() => {
+      void updateOutbox();
+    });
+
+    void dataContainer.outbox.start().then(() => {
+      void updateOutbox();
+    });
+
     return () => {
+      unsubscribeOutbox();
       dataContainer.outbox.stop();
     };
-  }, [session.status]);
+  }, [setOutbox, status]);
 
   const signIn = useCallback(async (emailValue: string, password: string) => {
     const result = await dataContainer.useCases.login({ email: emailValue, password });
@@ -122,20 +199,23 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   }, [applySession]);
 
   const requestPasswordRecovery = useCallback(async (emailValue: string) => {
-    const result = await dataContainer.useCases.recoverPassword({ email: emailValue });
-    return result;
+    return dataContainer.useCases.recoverPassword({ email: emailValue });
   }, []);
 
   const resendConfirmation = useCallback(async (emailValue: string) => {
-    const result = await dataContainer.repositories.auth.resendConfirmation(emailValue);
-    return result;
+    return dataContainer.repositories.auth.resendConfirmation(emailValue);
   }, []);
 
   const value = useMemo<SessionContextValue>(() => ({
-    ...session,
+    status,
+    role,
+    mustChangePassword,
+    emailVerified,
     userId,
     email,
     isLoading,
+    isOnline,
+    outbox,
     refresh,
     signIn,
     signOut,
@@ -144,10 +224,15 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     requestPasswordRecovery,
     resendConfirmation,
   }), [
-    session,
+    status,
+    role,
+    mustChangePassword,
+    emailVerified,
     userId,
     email,
     isLoading,
+    isOnline,
+    outbox,
     refresh,
     signIn,
     signOut,

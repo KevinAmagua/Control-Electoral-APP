@@ -15,8 +15,8 @@ export const ADN_ORGANIZATION: PoliticalOrganization = {
   shortName: 'ADN',
   listNumber: 7,
   colors: {
-    primary: '#6F2C91',
-    secondary: '#EAE84B',
+    primary: '#9854B3',
+    secondary: '#FFEC4E',
   },
 };
 

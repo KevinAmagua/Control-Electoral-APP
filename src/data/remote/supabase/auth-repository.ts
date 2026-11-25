@@ -6,16 +6,20 @@ import type {
 } from '@/domain/auth/credentials';
 import type { Session as DomainSession } from '@/domain/auth/session';
 import type { AuthRepository } from '@/domain/repositories/auth-repository';
+import type { UserProfile } from '@/domain/user/profile';
 
-import { createClient } from '@supabase/supabase-js';
+import * as Linking from 'expo-linking';
+import { createClient, type EmailOtpType } from '@supabase/supabase-js';
 
+import { queryWithLocalCache } from '../../local/sqliteClient';
 import {
   AUTH_REDIRECT_URL,
+  CONFIRM_EMAIL_REDIRECT_URL,
   SUPABASE_ANON_KEY,
   SUPABASE_URL,
   supabase,
 } from './client';
-import { toFailure } from './errors';
+import { errorMessage, toFailure } from './errors';
 import { mapProfile, type ProfileRow } from './mappers';
 
 type AuthUser = {
@@ -38,18 +42,80 @@ const VERIFICATION_ERROR = failure<DomainSession>(
   'Debe verificar su correo electrónico antes de continuar',
 );
 
-async function fetchProfile(userId: string) {
-  const { data, error } = await supabase
-    .from('profiles')
-    .select('*')
-    .eq('id', userId)
-    .maybeSingle();
+const AUTH_EMAIL_ERROR_MESSAGES = {
+  ERROR_SMTP: 'El servidor de correo no está configurado correctamente. Revise SMTP en Supabase.',
+  ERROR_ENVIAR_CORREO: 'No fue posible enviar el correo',
+} as const;
 
-  if (error) {
-    throw error;
+const EMAIL_OTP_VERIFY_TYPES: EmailOtpType[] = ['invite', 'email', 'magiclink', 'signup'];
+
+function getAuthRedirectUrl(type: 'signup' | 'recovery'): string {
+  try {
+    return Linking.createURL(type === 'recovery' ? '/callback' : '/confirmar-correo');
+  } catch {
+    return type === 'recovery' ? AUTH_REDIRECT_URL : CONFIRM_EMAIL_REDIRECT_URL;
   }
+}
 
-  return data ? mapProfile(data as ProfileRow) : null;
+function isSmtpFailure(error: unknown): boolean {
+  const message = errorMessage(error).toLowerCase();
+  return (
+    message.includes('535') ||
+    message.includes('username and password not accepted') ||
+    message.includes('unexpected_failure') ||
+    message.includes('unexpected failure')
+  );
+}
+
+async function requestAuthEmail(type: 'signup' | 'recovery', email: string): Promise<Result<void>> {
+  try {
+    const normalizedEmail = email.trim().toLowerCase();
+    const redirectTo = getAuthRedirectUrl(type);
+    const { error } = type === 'recovery'
+      ? await supabase.auth.resetPasswordForEmail(normalizedEmail, { redirectTo })
+      : await supabase.auth.resend({
+          type: 'signup',
+          email: normalizedEmail,
+          options: {
+            emailRedirectTo: redirectTo,
+          },
+        });
+
+    if (error) {
+      if (isSmtpFailure(error)) {
+        return failure('ERROR_SMTP', AUTH_EMAIL_ERROR_MESSAGES.ERROR_SMTP);
+      }
+      return toFailure(error, 'ERROR_ENVIAR_CORREO');
+    }
+
+    return ok(undefined);
+  } catch (error) {
+    if (isSmtpFailure(error)) {
+      return failure('ERROR_SMTP', AUTH_EMAIL_ERROR_MESSAGES.ERROR_SMTP);
+    }
+    return toFailure(error, 'ERROR_ENVIAR_CORREO');
+  }
+}
+
+async function fetchProfile(userId: string): Promise<UserProfile | null> {
+  const result = await queryWithLocalCache<UserProfile | null>(`profile:${userId}`, async () => {
+    const { data, error } = await supabase
+      .from('profiles')
+      .select('*')
+      .eq('id', userId)
+      .maybeSingle();
+
+    if (error) {
+      throw error;
+    }
+
+    return ok(data ? mapProfile(data as ProfileRow) : null);
+  });
+
+  if (!result.ok) {
+    throw new Error(result.error.message);
+  }
+  return result.value;
 }
 
 function toSession(user: AuthUser, profile: Profile): DomainSession {
@@ -89,7 +155,7 @@ function createCredentialValidationClient() {
   });
 }
 
-function paramsFromCallbackUrl(url: string): URLSearchParams {
+function paramsFromCallbackUrl(url: string, depth = 0): URLSearchParams {
   const params = new URLSearchParams();
   const queryIndex = url.indexOf('?');
   const hashIndex = url.indexOf('#');
@@ -103,6 +169,14 @@ function paramsFromCallbackUrl(url: string): URLSearchParams {
   }
   for (const [key, value] of new URLSearchParams(hash)) {
     params.set(key, value);
+  }
+
+  const nested = params.get('q') ?? params.get('url') ?? params.get('target');
+  const hasAuthParams = ['token', 'token_hash', 'access_token', 'code'].some((key) =>
+    params.has(key),
+  );
+  if (nested && !hasAuthParams && /^https?:\/\//i.test(nested) && depth < 3) {
+    return paramsFromCallbackUrl(nested, depth + 1);
   }
   return params;
 }
@@ -120,8 +194,13 @@ async function readCurrentSession(): Promise<Result<DomainSession>> {
     }
 
     const profile = await fetchProfile(user.id);
-    if (!profile || !profile.active) {
-      return ok(guestSession);
+    if (!profile) {
+      await signOutLocal();
+      return failure('CUENTA_INACTIVA', 'No se encontró el perfil de la cuenta');
+    }
+    if (!profile.active) {
+      await signOutLocal();
+      return failure('CUENTA_INACTIVA', 'La cuenta está inactiva. Contacte al administrador.');
     }
 
     const session = verifiedSession(user, profile);
@@ -173,9 +252,13 @@ export function createSupabaseAuthRepository(): AuthRepository {
         }
 
         const profile = await fetchProfile(user.id);
-        if (!profile || !profile.active) {
+        if (!profile) {
           await signOutLocal();
-          return failure('CUENTA_INACTIVA', 'La cuenta no existe o está inactiva');
+          return failure('CUENTA_INACTIVA', 'No se encontró el perfil de la cuenta');
+        }
+        if (!profile.active) {
+          await signOutLocal();
+          return failure('CUENTA_INACTIVA', 'La cuenta está inactiva. Contacte al administrador.');
         }
 
         const session = verifiedSession(user, profile);
@@ -258,24 +341,32 @@ export function createSupabaseAuthRepository(): AuthRepository {
     },
 
     async resendConfirmation(email: string): Promise<Result<void>> {
-      try {
-        const { error } = await supabase.auth.resend({
-          type: 'signup',
-          email,
-          options: { emailRedirectTo: AUTH_REDIRECT_URL },
-        });
-        if (error) {
-          return toFailure(error, 'ERROR_REENVIO_CONFIRMACION');
+      return requestAuthEmail('signup', email);
+    },
+
+    async verifyEmailOtp(email, token): Promise<Result<DomainSession>> {
+      let lastError: unknown = null;
+
+      for (const type of EMAIL_OTP_VERIFY_TYPES) {
+        try {
+          const { error } = await supabase.auth.verifyOtp({ email, token, type });
+          if (!error) {
+            return readCurrentSession();
+          }
+          lastError = error;
+        } catch (error) {
+          lastError = error;
         }
-        return ok(undefined);
-      } catch (error) {
-        return toFailure(error, 'ERROR_REENVIO_CONFIRMACION');
       }
+
+      return toFailure(lastError, 'ERROR_VERIFICAR_CODIGO');
     },
 
     async consumeAuthCallback(url: string): Promise<Result<DomainSession>> {
       try {
-        const params = paramsFromCallbackUrl(url);
+        const rawValue = url.trim();
+        const rawTokenHash = /^[a-f0-9]{40}$/i.test(rawValue);
+        const params = paramsFromCallbackUrl(rawValue);
         const errorCode = params.get('error') ?? params.get('error_code');
         const errorDescription = params.get('error_description');
         if (errorCode || errorDescription) {
@@ -283,6 +374,28 @@ export function createSupabaseAuthRepository(): AuthRepository {
             'ERROR_CALLBACK_AUTH',
             errorDescription ?? 'No fue posible completar la verificación del correo',
           );
+        }
+
+        const otpType = (params.get('type') ?? (rawTokenHash ? 'signup' : 'email')) as EmailOtpType;
+        const email = params.get('email');
+        const token = params.get('token_hash') ?? params.get('token') ?? (rawTokenHash ? rawValue : null);
+        if (token) {
+          const { error } = email && /^\d{6,10}$/.test(token)
+            ? await supabase.auth.verifyOtp({ email, token, type: otpType })
+            : await supabase.auth.verifyOtp({ token_hash: token, type: otpType });
+          if (error) {
+            return toFailure(error, 'ERROR_CALLBACK_AUTH');
+          }
+          return readCurrentSession();
+        }
+
+        const code = params.get('code');
+        if (code) {
+          const { error } = await supabase.auth.exchangeCodeForSession(code);
+          if (error) {
+            return toFailure(error, 'ERROR_CALLBACK_AUTH');
+          }
+          return readCurrentSession();
         }
 
         const accessToken = params.get('access_token');
@@ -306,17 +419,7 @@ export function createSupabaseAuthRepository(): AuthRepository {
     },
 
     async requestPasswordRecovery(input: PasswordRecoveryInput): Promise<Result<void>> {
-      try {
-        const { error } = await supabase.auth.resetPasswordForEmail(input.email, {
-          redirectTo: AUTH_REDIRECT_URL,
-        });
-        if (error) {
-          return toFailure(error, 'ERROR_RECUPERACION');
-        }
-        return ok(undefined);
-      } catch (error) {
-        return toFailure(error, 'ERROR_RECUPERACION');
-      }
+      return requestAuthEmail('recovery', input.email);
     },
 
     async signOut(): Promise<Result<void>> {

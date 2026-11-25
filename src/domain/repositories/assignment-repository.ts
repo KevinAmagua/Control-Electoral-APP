@@ -23,4 +23,5 @@ export interface AssignmentRepository {
   assign(input: AssignMesaInput): Promise<Result<Assignment>>;
   assignMany(input: AssignMesasInput): Promise<Result<Assignment[]>>;
   replace(input: ReplaceVeedorRecord): Promise<Result<Assignment[]>>;
+  subscribeToAssignments(listener: () => void): () => void;
 }

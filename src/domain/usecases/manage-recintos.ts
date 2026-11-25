@@ -120,14 +120,17 @@ export function createAssignRecintoCoordinatorUseCase(
     if (!byRecinto.ok) {
       return byRecinto;
     }
-    const previous = byRecinto.value.find(
-      (profile) => profile.role === 'coordinador_recinto' && profile.active && profile.id !== coordinador.id,
+    const assigned = byRecinto.value.find(
+      (profile) => profile.role === 'coordinador_recinto' && profile.active,
     );
-    if (previous) {
-      const deactivated = await dependencies.users.deactivate(previous.id);
-      if (!deactivated.ok) {
-        return deactivated;
-      }
+    if (assigned && assigned.id !== coordinador.id) {
+      return failure(
+        'COORDINADOR_YA_ASIGNADO',
+        'Ya hay un coordinador asignado a este recinto. No se puede reasignar otro.',
+      );
+    }
+    if (assigned) {
+      return ok(recinto);
     }
 
     return dependencies.territory.setRecintoCoordinator(recinto.id, coordinador.id);

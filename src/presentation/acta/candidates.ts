@@ -1,4 +1,5 @@
 import { failure, ok, type Result } from '@/core/result/result';
+import { queryWithLocalCache } from '@/data/local/sqliteClient';
 import { supabase } from '@/data/remote/supabase/client';
 import { POLITICAL_ORGANIZATIONS } from '@/domain/election/organization';
 import type { Dignity } from '@/domain/election/dignity';
@@ -37,25 +38,27 @@ function toOption(row: CandidateRow, dignidad: Dignity): CandidateOption {
 export async function listCandidateOptions(
   dignidad: Dignity,
 ): Promise<Result<CandidateOption[]>> {
-  try {
-    const { data, error } = await supabase
-      .from('candidates')
-      .select('id, organization_id, full_name, list_number')
-      .eq('dignidad', dignidad)
-      .eq('active', true)
-      .order('list_number', { ascending: true });
+  return queryWithLocalCache(`candidates:${dignidad}`, async () => {
+    try {
+      const { data, error } = await supabase
+        .from('candidates')
+        .select('id, organization_id, full_name, list_number')
+        .eq('dignidad', dignidad)
+        .eq('active', true)
+        .order('list_number', { ascending: true });
 
-    if (error) {
-      throw error;
+      if (error) {
+        throw error;
+      }
+
+      return ok(((data ?? []) as unknown as CandidateRow[]).map((row) => toOption(row, dignidad)));
+    } catch (error) {
+      return failure(
+        'ERROR_LISTAR_CANDIDATOS',
+        error instanceof Error ? error.message : 'No fue posible cargar los candidatos',
+      );
     }
-
-    return ok(((data ?? []) as unknown as CandidateRow[]).map((row) => toOption(row, dignidad)));
-  } catch (error) {
-    return failure(
-      'ERROR_LISTAR_CANDIDATOS',
-      error instanceof Error ? error.message : 'No fue posible cargar los candidatos',
-    );
-  }
+  });
 }
 
 export async function listAllCandidateOptions(): Promise<Result<CandidateOption[]>> {

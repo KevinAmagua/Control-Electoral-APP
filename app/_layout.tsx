@@ -1,11 +1,13 @@
 import * as Sentry from '@sentry/react-native';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Stack, usePathname } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { ActivityIndicator, StyleSheet, View } from 'react-native';
 
 import { palette } from '@/core/theme';
 import { initializeSentry, setSentryScreen } from '@/data/monitoring/sentry';
+import { AppErrorBoundary } from '@/presentation/components';
 import { SessionProvider, useSession } from '@/presentation/session/SessionProvider';
 import { AppThemeProvider } from '@/presentation/theme';
 
@@ -19,7 +21,6 @@ function RootNavigator() {
     setSentryScreen(pathname);
   }, [pathname]);
   const isAuthenticated = status === 'authenticated' && role !== null;
-  const needsPasswordChange = isAuthenticated && mustChangePassword;
   const isReady = isAuthenticated && !mustChangePassword;
 
   if (isLoading) {
@@ -34,9 +35,7 @@ function RootNavigator() {
     <Stack screenOptions={{ headerShown: false }}>
       <Stack.Screen name="index" />
 
-      <Stack.Protected guard={status === 'guest' || needsPasswordChange}>
-        <Stack.Screen name="(auth)" />
-      </Stack.Protected>
+      <Stack.Screen name="(auth)" />
 
       <Stack.Protected guard={isReady && role === 'coordinador_provincial'}>
         <Stack.Screen name="(provincial)" />
@@ -54,13 +53,30 @@ function RootNavigator() {
 }
 
 function RootLayout() {
+  const [queryClient] = useState(
+    () =>
+      new QueryClient({
+        defaultOptions: {
+          queries: {
+            staleTime: 30_000,
+            retry: 1,
+            refetchOnWindowFocus: false,
+          },
+        },
+      }),
+  );
+
   return (
-    <SessionProvider>
-      <AppThemeProvider>
-        <RootNavigator />
-        <StatusBar style="light" />
-      </AppThemeProvider>
-    </SessionProvider>
+    <AppErrorBoundary>
+      <SessionProvider>
+        <QueryClientProvider client={queryClient}>
+          <AppThemeProvider>
+            <RootNavigator />
+            <StatusBar style="light" />
+          </AppThemeProvider>
+        </QueryClientProvider>
+      </SessionProvider>
+    </AppErrorBoundary>
   );
 }
 
@@ -69,7 +85,7 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: palette.background,
+    backgroundColor: 'transparent',
   },
 });
 

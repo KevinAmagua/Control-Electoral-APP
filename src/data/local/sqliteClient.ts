@@ -1,12 +1,14 @@
-import * as SQLite from 'expo-sqlite';
 import type { SQLiteDatabase } from 'expo-sqlite';
 
+import { failure, ok, type Result } from '@/core/result/result';
 import type { ActaStatus } from '@/domain/acta/acta-status';
 import type { Dignity } from '@/domain/election/dignity';
 
+import { getCurrentAuthUserId } from '../remote/supabase/client';
+
 export const LOCAL_DATABASE_NAME = 'control-electoral-adn.db';
 
-const DATABASE_VERSION = 1;
+const DATABASE_VERSION = 4;
 const STALE_OPERATION_TIMEOUT_MS = 120000;
 
 export type LocalOutboxStatus = 'pendiente' | 'en_proceso' | 'guardado' | 'fallado';
@@ -45,7 +47,20 @@ export type OutboxOperation = {
   payload: string;
 };
 
+export type LocalActaOperationDetail = {
+  operationId: string;
+  actaId: string;
+  mesaId: string;
+  dignity: Dignity;
+  status: LocalOutboxStatus;
+  version: number;
+  createdAt: string;
+  updatedAt: string;
+  payload: SaveActaOfflineInput | null;
+};
+
 export type ActaConflictInput = {
+  id?: string;
   actaId: string;
   mesaId: string;
   dignity: Dignity;
@@ -53,6 +68,23 @@ export type ActaConflictInput = {
   localVersion: number;
   remoteVersion: number;
   payload: unknown;
+};
+
+export type OutboxSnapshot = {
+  pending: number;
+  inProgress: number;
+  saved: number;
+  failed: number;
+  conflicts: number;
+  updatedAt: string;
+};
+
+export type LocalActaConflict = ActaConflictInput & {
+  id: string;
+  status: 'detectado' | 'en_revision' | 'resuelto';
+  createdAt: string;
+  resolvedAt: string | null;
+  syncedAt: string | null;
 };
 
 const MIGRATIONS: readonly string[] = [
@@ -187,11 +219,36 @@ const MIGRATIONS: readonly string[] = [
   CREATE INDEX IF NOT EXISTS idx_outbox_status_attempt
     ON outbox (status, next_attempt_at, created_at);
   CREATE INDEX IF NOT EXISTS idx_conflictos_estado
-    ON conflictos_edicion_local (estado);
+     ON conflictos_edicion_local (estado);
+   `,
+  `
+  CREATE TABLE IF NOT EXISTS reference_cache (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  `,
+  `
+  ALTER TABLE conflictos_edicion_local ADD COLUMN synced_at TEXT;
+  `,
+  `
+  DELETE FROM reference_cache;
   `
 ];
 
 let databasePromise: Promise<SQLiteDatabase> | null = null;
+let sqliteModulePromise: Promise<typeof import('expo-sqlite')> | null = null;
+
+function loadSqliteModule(): Promise<typeof import('expo-sqlite')> {
+  if (!sqliteModulePromise) {
+    sqliteModulePromise = import('expo-sqlite').catch((error: unknown) => {
+      sqliteModulePromise = null;
+      throw error;
+    });
+  }
+
+  return sqliteModulePromise;
+}
 
 function createId(): string {
   const cryptoRef = globalThis.crypto as
@@ -224,7 +281,8 @@ function nowIso(): string {
 
 function openLocalDatabase(): Promise<SQLiteDatabase> {
   if (!databasePromise) {
-    databasePromise = SQLite.openDatabaseAsync(LOCAL_DATABASE_NAME)
+    databasePromise = loadSqliteModule()
+      .then((SQLite) => SQLite.openDatabaseAsync(LOCAL_DATABASE_NAME))
       .then(async (database) => {
         await database.execAsync(`
           PRAGMA journal_mode = WAL;
@@ -347,7 +405,7 @@ async function insertConflictInTransaction(
       id, acta_id, mesa_id, dignidad, base_version, local_version,
       remote_version, payload, estado, creado_en
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'detectado', ?)`,
-    createId(),
+    input.id ?? createId(),
     input.actaId,
     input.mesaId,
     input.dignity,
@@ -393,6 +451,93 @@ export async function saveActaOffline(input: SaveActaOfflineInput): Promise<stri
 
     if (existing) {
       savedOperationId = existing.operation_id;
+      const current = await database.getFirstAsync<{
+        status: LocalOutboxStatus;
+        actaId: string;
+        version: number;
+      }>(
+        `SELECT outbox.status, outbox.acta_id AS actaId, actas_local.version
+         FROM outbox
+         INNER JOIN actas_local ON actas_local.operation_id = outbox.operation_id
+         WHERE outbox.operation_id = ?`,
+        operationId,
+      );
+
+      if (!current || current.status !== 'fallado') {
+        return;
+      }
+
+      const nowForUpdate = nowIso();
+      await database.runAsync(
+        `UPDATE actas_local
+         SET acta_id = ?, mesa_id = ?, dignidad = ?, version = ?, estado = 'en_proceso',
+             total_sufragantes = ?, votos_validos = ?, votos_blancos = ?, votos_nulos = ?,
+             gps_lat = ?, gps_lng = ?, gps_precision = ?, foto_path = ?, observaciones = ?,
+             actualizado_en = ?
+         WHERE operation_id = ?`,
+        input.actaId,
+        input.mesaId,
+        input.dignity,
+        current.version,
+        input.totalSufragantes,
+        input.votosValidos,
+        input.votosBlancos,
+        input.votosNulos,
+        input.gpsLat,
+        input.gpsLng,
+        input.gpsPrecision,
+        input.fotoPath,
+        input.observaciones ?? null,
+        nowForUpdate,
+        operationId,
+      );
+      await database.runAsync(
+        'DELETE FROM votos_detalle_local WHERE operation_id = ?',
+        operationId,
+      );
+      for (const vote of input.votes) {
+        await database.runAsync(
+          `INSERT INTO votos_detalle_local (operation_id, organization_id, candidate_id, votos)
+           VALUES (?, ?, ?, ?)`,
+          operationId,
+          vote.organizationId,
+          vote.candidateId,
+          vote.votos,
+        );
+      }
+      await database.runAsync(
+        'DELETE FROM acta_versiones_local WHERE acta_id = ? AND version = ?',
+        current.actaId,
+        current.version,
+      );
+      await database.runAsync(
+        `INSERT INTO acta_versiones_local (
+           acta_id, mesa_id, dignidad, version, payload, device_id, creado_en
+         ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        input.actaId,
+        input.mesaId,
+        input.dignity,
+        current.version,
+        payload,
+        input.deviceId ?? 'dispositivo-local',
+        nowForUpdate,
+      );
+      await database.runAsync(
+        `UPDATE outbox
+         SET acta_id = ?, payload = ?, status = 'pendiente', last_error = NULL,
+             next_attempt_at = NULL, updated_at = ?
+         WHERE operation_id = ?`,
+        input.actaId,
+        payload,
+        nowForUpdate,
+        operationId,
+      );
+      await database.runAsync(
+        `INSERT INTO outbox_attempts (outbox_id, status, error, created_at)
+         SELECT id, 'pendiente', NULL, ? FROM outbox WHERE operation_id = ?`,
+        nowForUpdate,
+        operationId,
+      );
       return;
     }
 
@@ -640,4 +785,236 @@ export async function markOutboxOperation(
       operationId,
     );
   });
+}
+
+export async function getOutboxSnapshot(): Promise<OutboxSnapshot> {
+  const database = await initializeLocalDatabase();
+  const counts = await database.getFirstAsync<{
+    pending: number;
+    inProgress: number;
+    saved: number;
+    failed: number;
+  }>(
+    `SELECT
+       COALESCE(SUM(CASE WHEN status = 'pendiente' THEN 1 ELSE 0 END), 0) AS pending,
+       COALESCE(SUM(CASE WHEN status = 'en_proceso' THEN 1 ELSE 0 END), 0) AS inProgress,
+       COALESCE(SUM(CASE WHEN status = 'guardado' THEN 1 ELSE 0 END), 0) AS saved,
+       COALESCE(SUM(CASE WHEN status = 'fallado' THEN 1 ELSE 0 END), 0) AS failed
+     FROM outbox`,
+  );
+  const conflictCount = await database.getFirstAsync<{ conflicts: number }>(
+    `SELECT COUNT(*) AS conflicts
+     FROM conflictos_edicion_local
+     WHERE estado <> 'resuelto'`,
+  );
+
+  return {
+    pending: counts?.pending ?? 0,
+    inProgress: counts?.inProgress ?? 0,
+    saved: counts?.saved ?? 0,
+    failed: counts?.failed ?? 0,
+    conflicts: conflictCount?.conflicts ?? 0,
+    updatedAt: nowIso(),
+  };
+}
+
+export async function listLocalConflicts(): Promise<LocalActaConflict[]> {
+  const database = await initializeLocalDatabase();
+  const rows = await database.getAllAsync<{
+    id: string;
+    acta_id: string;
+    mesa_id: string;
+    dignidad: Dignity;
+    base_version: number;
+    local_version: number;
+    remote_version: number;
+    payload: string;
+    estado: 'detectado' | 'en_revision' | 'resuelto';
+    creado_en: string;
+    resuelto_en: string | null;
+    synced_at: string | null;
+  }>(
+    `SELECT
+       id, acta_id, mesa_id, dignidad, base_version, local_version,
+       remote_version, payload, estado, creado_en, resuelto_en, synced_at
+     FROM conflictos_edicion_local
+     ORDER BY creado_en DESC`,
+  );
+
+  return rows.map((row) => {
+    let payload: unknown = null;
+    try {
+      payload = JSON.parse(row.payload) as unknown;
+    } catch {
+      payload = null;
+    }
+
+    return {
+      id: row.id,
+      actaId: row.acta_id,
+      mesaId: row.mesa_id,
+      dignity: row.dignidad,
+      baseVersion: row.base_version,
+      localVersion: row.local_version,
+      remoteVersion: row.remote_version,
+      payload,
+      status: row.estado,
+      createdAt: row.creado_en,
+      resolvedAt: row.resuelto_en,
+      syncedAt: row.synced_at,
+    };
+  });
+}
+
+export async function listUnsyncedLocalConflicts(): Promise<LocalActaConflict[]> {
+  const conflicts = await listLocalConflicts();
+  return conflicts.filter((conflict) => conflict.syncedAt === null);
+}
+
+export async function markLocalConflictSynced(conflictId: string): Promise<void> {
+  const database = await initializeLocalDatabase();
+  await database.runAsync(
+    'UPDATE conflictos_edicion_local SET synced_at = ? WHERE id = ?',
+    nowIso(),
+    conflictId,
+  );
+}
+
+async function getCacheKeyPrefix(): Promise<string> {
+  try {
+    const userId = await getCurrentAuthUserId();
+    return userId ? `user:${userId}:` : 'anon:';
+  } catch {
+    return 'anon:';
+  }
+}
+
+async function cacheReferenceDataWithPrefix(
+  entries: readonly { key: string; value: unknown }[],
+  prefix: string,
+): Promise<void> {
+  if (entries.length === 0) {
+    return;
+  }
+
+  const database = await initializeLocalDatabase();
+  const now = nowIso();
+  await database.withTransactionAsync(async () => {
+    for (const entry of entries) {
+      await database.runAsync(
+        `INSERT INTO reference_cache (key, value, updated_at)
+         VALUES (?, ?, ?)
+         ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
+        `${prefix}${entry.key}`,
+        JSON.stringify(entry.value),
+        now,
+      );
+    }
+  });
+}
+
+export async function cacheReferenceData(
+  entries: readonly { key: string; value: unknown }[],
+): Promise<void> {
+  await cacheReferenceDataWithPrefix(entries, await getCacheKeyPrefix());
+}
+
+async function readCachedReferenceWithPrefix<T>(key: string, prefix: string): Promise<T | null> {
+  try {
+    const database = await initializeLocalDatabase();
+    const row = await database.getFirstAsync<{ value: string }>(
+      'SELECT value FROM reference_cache WHERE key = ?',
+      `${prefix}${key}`,
+    );
+    if (!row) {
+      return null;
+    }
+    return JSON.parse(row.value) as T;
+  } catch {
+    return null;
+  }
+}
+
+export async function readCachedReference<T>(key: string): Promise<T | null> {
+  return readCachedReferenceWithPrefix(key, await getCacheKeyPrefix());
+}
+
+export async function queryWithLocalCache<T>(
+  key: string,
+  query: () => Promise<Result<T>>,
+): Promise<Result<T>> {
+  const prefix = await getCacheKeyPrefix();
+  try {
+    const result = await query();
+    if (result.ok) {
+      await cacheReferenceDataWithPrefix([{ key, value: result.value }], prefix);
+      return result;
+    }
+    const cached = await readCachedReferenceWithPrefix<T>(key, prefix);
+    return cached === null ? result : ok(cached);
+  } catch (error) {
+    const cached = await readCachedReferenceWithPrefix<T>(key, prefix);
+    if (cached !== null) {
+      return ok(cached);
+    }
+    return failure(
+      'ERROR_SIN_CONEXION',
+      error instanceof Error ? error.message : 'No fue posible acceder a los datos locales',
+    );
+  }
+}
+
+export async function getLocalActaOperationDetail(
+  operationId: string,
+): Promise<LocalActaOperationDetail | null> {
+  const database = await initializeLocalDatabase();
+  const row = await database.getFirstAsync<{
+    operation_id: string;
+    acta_id: string;
+    mesa_id: string;
+    dignity: Dignity;
+    status: LocalOutboxStatus;
+    version: number;
+    created_at: string;
+    updated_at: string;
+    payload: string;
+  }>(
+    `SELECT
+       outbox.operation_id,
+       outbox.acta_id,
+       actas_local.mesa_id,
+       actas_local.dignidad AS dignity,
+       outbox.status,
+       actas_local.version,
+       outbox.created_at,
+       outbox.updated_at,
+       outbox.payload
+     FROM outbox
+     INNER JOIN actas_local ON actas_local.operation_id = outbox.operation_id
+     WHERE outbox.operation_id = ?`,
+    operationId,
+  );
+
+  if (!row) {
+    return null;
+  }
+
+  let payload: SaveActaOfflineInput | null = null;
+  try {
+    payload = JSON.parse(row.payload) as SaveActaOfflineInput;
+  } catch {
+    payload = null;
+  }
+
+  return {
+    operationId: row.operation_id,
+    actaId: row.acta_id,
+    mesaId: row.mesa_id,
+    dignity: row.dignity,
+    status: row.status,
+    version: row.version,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    payload,
+  };
 }

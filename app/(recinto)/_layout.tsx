@@ -3,11 +3,9 @@ import { Stack } from 'expo-router';
 export default function RecintoLayout() {
   return (
     <Stack screenOptions={{ headerShown: false }}>
-      <Stack.Screen name="recinto" />
-      <Stack.Screen name="asignar-veedores" />
-      <Stack.Screen name="conflictos" />
-      <Stack.Screen name="revision-acta" />
-      <Stack.Screen name="nuevo-veedor" />
+      <Stack.Screen name="(tabs)" />
+      <Stack.Screen name="nueva-mesa" options={{ presentation: 'modal' }} />
+      <Stack.Screen name="nuevo-veedor" options={{ presentation: 'modal' }} />
     </Stack>
   );
 }

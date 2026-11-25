@@ -1,10 +1,10 @@
-import { router } from 'expo-router';
 import { useCallback, useEffect, useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 
 import { palette, radius, spacing, typography } from '@/core/theme';
 import { dataContainer } from '@/data/container';
 import type { LocalOutboxStatus } from '@/data/local/sqliteClient';
+import { captureError } from '@/data/monitoring/sentry';
 import { DIGNITY_LABELS } from '@/domain/election/dignity';
 import { formatDateTime, formatCoordinate } from '@/presentation/acta/geo';
 import {
@@ -13,6 +13,10 @@ import {
 } from '@/presentation/acta/outbox-status';
 import { useActorProfile } from '@/presentation/acta/session-actor';
 import { useOutboxSync } from '@/presentation/acta/useOutboxSync';
+import {
+  describeSyncStatus,
+  localOutboxStatusToSyncStatus,
+} from '@/presentation/acta/sync-status';
 import {
   PrimaryButton,
   Screen,
@@ -66,10 +70,10 @@ function getSyncSummary(
     return `${failedCount} actas necesitan atención. Revise el detalle de cada operación.`;
   }
   if (pendingCount > 0) {
-    return `${pendingCount} actas guardadas en el dispositivo esperan sincronización.`;
+    return `${pendingCount} actas guardadas esperan sincronización.`;
   }
   if (syncedOperations.length === 0) {
-    return 'No hay actas guardadas en este dispositivo.';
+    return 'No hay actas guardadas.';
   }
 
   return `${syncedOperations.length} actas sincronizadas. Última acta enviada: ${formatDateTime(
@@ -78,18 +82,12 @@ function getSyncSummary(
 }
 
 function toFeedbackStatus(status: LocalOutboxStatus): FeedbackStatus {
-  if (status === 'guardado') {
-    return 'enviado';
-  }
-  if (status === 'fallado') {
-    return 'fallado';
-  }
-  return 'guardado_local';
+  return localOutboxStatusToSyncStatus(status);
 }
 
 export default function EstadosActaScreen() {
   const { actorId, isLoading: isActorLoading, error: actorError } = useActorProfile();
-  const { flush, syncing, error: syncError } = useOutboxSync();
+  const { flush, syncing, error: syncError, revision } = useOutboxSync();
   const [operations, setOperations] = useState<OperationView[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -152,8 +150,9 @@ export default function EstadosActaScreen() {
           setOperations(views);
         }
       } catch (error) {
+        captureError(error, { scope: 'estadosActa.load' });
         if (active) {
-          setLoadError(error instanceof Error ? error.message : 'No fue posible leer la cola local.');
+          setLoadError(error instanceof Error ? error.message : 'No fue posible leer los registros.');
         }
       } finally {
         if (active) {
@@ -167,7 +166,7 @@ export default function EstadosActaScreen() {
     return () => {
       active = false;
     };
-  }, [actorId, finishLoading, reloadToken, startLoading]);
+  }, [actorId, finishLoading, reloadToken, revision, startLoading]);
 
   async function handleFlush() {
     await flush();
@@ -177,7 +176,7 @@ export default function EstadosActaScreen() {
   return (
     <Screen
       title="Estados de guardado"
-      subtitle="Cola SQLite del dispositivo"
+      subtitle="Actas pendientes de envío"
       action={
         <PrimaryButton
           label="Actualizar"
@@ -218,13 +217,14 @@ export default function EstadosActaScreen() {
           <StatusFeedback
             status={toFeedbackStatus(operation.status)}
             message={
-              operation.lastError ??
-              `Última actualización registrada: ${formatDateTime(operation.updatedAt)}`
+              operation.lastError
+                ? `${describeSyncStatus(operation.status)}: ${operation.lastError}`
+                : `${describeSyncStatus(operation.status)}. Última actualización: ${formatDateTime(operation.updatedAt)}`
             }
           />
           <View style={styles.details}>
             <Text style={styles.detail}>Operación: {operation.operationId}</Text>
-            <Text style={styles.detail}>Versión local: {operation.version}</Text>
+            <Text style={styles.detail}>Versión: {operation.version}</Text>
             <Text style={styles.detail}>Sufragantes: {operation.totalSufragantes}</Text>
             <Text style={styles.detail}>
               GPS: {formatCoordinate(operation.gpsLat)}, {formatCoordinate(operation.gpsLng)} (±
@@ -234,8 +234,6 @@ export default function EstadosActaScreen() {
           </View>
         </View>
       ))}
-
-      <PrimaryButton label="Volver a mesas" onPress={() => router.back()} tone="secondary" />
     </Screen>
   );
 }

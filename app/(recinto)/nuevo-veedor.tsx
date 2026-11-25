@@ -5,6 +5,7 @@ import { Controller, useForm } from 'react-hook-form';
 import type { z } from 'zod';
 import { StyleSheet, View } from 'react-native';
 
+import type { AppError } from '@/core/result/result';
 import { spacing } from '@/core/theme';
 import { dataContainer } from '@/data/container';
 import { normalizeCedula } from '@/domain/validation/cedula';
@@ -22,7 +23,7 @@ type CreateUserValues = z.input<typeof createUserSchema>;
 type CreateUserResult = z.output<typeof createUserSchema>;
 
 export default function NuevoVeedorScreen() {
-  const params = useLocalSearchParams<{ mesas?: string }>();
+  const params = useLocalSearchParams<{ mesas?: string; previous?: string; reason?: string }>();
   const { actorId, profile, isLoading: isActorLoading, error: actorError } = useActorProfile();
   const [feedback, setFeedback] = useState<{ status: FeedbackStatus; message: string } | null>(null);
   const {
@@ -30,6 +31,7 @@ export default function NuevoVeedorScreen() {
     handleSubmit,
     setValue,
     setError,
+    reset,
     formState: { errors, isSubmitting },
   } = useForm<CreateUserValues, unknown, CreateUserResult>({
     resolver: zodResolver(createUserSchema),
@@ -56,6 +58,50 @@ export default function NuevoVeedorScreen() {
     .map((value) => value.trim())
     .filter(Boolean);
 
+  const previousVeedorId = typeof params.previous === 'string' ? params.previous : null;
+  const replacementReason =
+    typeof params.reason === 'string' && params.reason.trim().length > 0
+      ? params.reason.trim()
+      : 'Veedor sustituto creado desde el recinto';
+
+  function reportCreationError(error: AppError) {
+    if (
+      error.code === 'CEDULA_INVALIDA' ||
+      error.code === 'CEDULA_YA_REGISTRADA' ||
+      error.code === 'REGISTRO_DUPLICADO'
+    ) {
+      setError('cedula', { type: 'server', message: error.message });
+      return;
+    }
+    if (error.code === 'CORREO_YA_REGISTRADO' || error.code === 'CORREO_INVALIDO') {
+      setError('email', { type: 'server', message: error.message });
+      return;
+    }
+    if (error.code === 'TELEFONO_INVALIDO') {
+      setError('phone', { type: 'server', message: error.message });
+      return;
+    }
+    if (
+      error.code === 'NOMBRE_INVALIDO' ||
+      error.code === 'APELLIDO_INVALIDO'
+    ) {
+      setError(error.code === 'NOMBRE_INVALIDO' ? 'firstName' : 'lastName', {
+        type: 'server',
+        message: error.message,
+      });
+      return;
+    }
+    if (
+      error.code === 'FUERA_DE_JURISDICCION' ||
+      error.code === 'RECINTO_FUERA_DE_JURISDICCION' ||
+      error.code === 'JERARQUIA_INVALIDA'
+    ) {
+      setError('recintoId', { type: 'server', message: error.message });
+      return;
+    }
+    setFeedback({ status: 'fallado', message: error.message });
+  }
+
   const onSubmit = async (values: CreateUserResult) => {
     if (!actorId || !profile?.recintoId) {
       return;
@@ -67,26 +113,58 @@ export default function NuevoVeedorScreen() {
       });
       return;
     }
+    if (previousVeedorId && mesaIds.length === 0) {
+      setFeedback({
+        status: 'validacion',
+        message: 'Seleccione las mesas que se asignarán al veedor sustituto.',
+      });
+      return;
+    }
 
     setFeedback(null);
+    const newVeedor = {
+      cedula: values.cedula,
+      firstName: values.firstName,
+      lastName: values.lastName,
+      phone: values.phone,
+      email: values.email,
+    };
+
+    if (previousVeedorId) {
+      const replaced = await dataContainer.useCases.replaceVeedor({
+        actorId,
+        mesaIds,
+        previousVeedorId,
+        newVeedor,
+        reason: replacementReason,
+      });
+      if (!replaced.ok) {
+        reportCreationError(replaced.error);
+        return;
+      }
+      setFeedback({
+        status: 'guardado',
+        message: `${replaced.value.length} mesa(s) reasignadas al nuevo veedor`,
+      });
+      reset({
+        role: 'veedor',
+        cedula: '',
+        firstName: '',
+        lastName: '',
+        phone: '',
+        email: '',
+        recintoId: profile.recintoId,
+      });
+      return;
+    }
+
     const created = await dataContainer.useCases.createAccount({
       ...values,
       createdBy: actorId,
     });
 
     if (!created.ok) {
-      if (created.error.code === 'CEDULA_YA_REGISTRADA' || created.error.code === 'REGISTRO_DUPLICADO') {
-        setError('cedula', { type: 'server', message: created.error.message });
-      } else if (created.error.code === 'CORREO_YA_REGISTRADO') {
-        setError('email', { type: 'server', message: created.error.message });
-      } else if (
-        created.error.code === 'FUERA_DE_JURISDICCION' ||
-        created.error.code === 'RECINTO_FUERA_DE_JURISDICCION'
-      ) {
-        setError('recintoId', { type: 'server', message: created.error.message });
-      } else {
-        setFeedback({ status: 'fallado', message: created.error.message });
-      }
+      reportCreationError(created.error);
       return;
     }
 
@@ -95,7 +173,7 @@ export default function NuevoVeedorScreen() {
         actorId,
         veedorId: created.value.id,
         mesaIds,
-        reason: 'Veedor sustituto creado desde el recinto',
+        reason: replacementReason,
       });
       if (!assigned.ok) {
         setFeedback({
@@ -112,7 +190,15 @@ export default function NuevoVeedorScreen() {
         ? 'Veedor creado y asignado a las mesas seleccionadas'
         : 'Veedor creado correctamente',
     });
-    router.back();
+    reset({
+      role: 'veedor',
+      cedula: '',
+      firstName: '',
+      lastName: '',
+      phone: '',
+      email: '',
+      recintoId: profile.recintoId,
+    });
   };
 
   return (

@@ -1,9 +1,10 @@
 import { router } from 'expo-router';
 import { useCallback, useEffect, useState } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { StyleSheet, Text, View } from 'react-native';
 
 import { palette, radius, spacing, typography } from '@/core/theme';
 import { dataContainer } from '@/data/container';
+import { cacheReferenceData } from '@/data/local/sqliteClient';
 import { getMesaProgress } from '@/domain/acta/progress';
 import type { Acta } from '@/domain/acta/acta';
 import type { Mesa } from '@/domain/election/mesa';
@@ -31,7 +32,7 @@ function toDisplayStatus(status: ReturnType<typeof getMesaProgress>['status']): 
 }
 
 export default function RecintoScreen() {
-  const { session, profile, isLoading: isActorLoading, error: actorError } = useActorProfile();
+  const { profile, isLoading: isActorLoading, error: actorError } = useActorProfile();
   const [recinto, setRecinto] = useState<Recinto | null>(null);
   const [rows, setRows] = useState<MesaRow[]>([]);
   const [pendingConflicts, setPendingConflicts] = useState(0);
@@ -84,6 +85,14 @@ export default function RecintoScreen() {
         const assignmentResults = await Promise.all(
           mesasResult.value.map((mesa) => assignments.getActiveByMesa(mesa.id)),
         );
+        await cacheReferenceData([
+          { key: `recinto:${recintoId}`, value: recintoResult.value },
+          ...mesasResult.value.map((mesa) => ({ key: `mesa:${mesa.id}`, value: mesa })),
+          ...mesasResult.value.map((mesa, index) => ({
+            key: `assignments:${mesa.id}`,
+            value: assignmentResults[index]?.ok ? assignmentResults[index]?.value : [],
+          })),
+        ]);
         const usersById = new Map(usersResult.value.map((user) => [user.id, user]));
         const nextRows: MesaRow[] = mesasResult.value.map((mesa, index) => {
           const assignment = assignmentResults[index];
@@ -125,23 +134,65 @@ export default function RecintoScreen() {
     };
   }, [profile?.recintoId, isActorLoading, finishLoading, reloadToken, startLoading]);
 
-  async function handleSignOut() {
-    await session.signOut();
-    router.replace('/login');
-  }
+  useEffect(() => {
+    if (!profile?.recintoId) {
+      return;
+    }
+
+    const unsubscribeConflicts = dataContainer.repositories.actas.subscribeToConflicts(() => {
+      setReloadToken((value) => value + 1);
+    });
+    const unsubscribeAssignments =
+      dataContainer.repositories.assignments.subscribeToAssignments(() => {
+        setReloadToken((value) => value + 1);
+      });
+
+    return () => {
+      unsubscribeConflicts();
+      unsubscribeAssignments();
+    };
+  }, [profile?.recintoId]);
 
   return (
     <Screen
       title="Recinto de votación"
-      subtitle={recinto ? `${recinto.code} · ${recinto.name}` : 'Coordinación de recinto'}
-      action={
-        <PrimaryButton
-          label="Actualizar"
-          onPress={() => setReloadToken((value) => value + 1)}
-          disabled={loading}
-          tone="secondary"
+      subtitle={recinto ? `${recinto.code} · ${recinto.name}` : 'Coordinación de recinto'}>
+      <View style={styles.actionCard}>
+        <SectionTitle
+          title="Acciones del recinto"
+          subtitle="Registre una mesa, cree veedores o vuelva a consultar los datos."
         />
-      }>
+        <View style={styles.actions}>
+          <PrimaryButton
+            compact
+            label="Nueva mesa"
+            onPress={() => router.push('/nueva-mesa')}
+            disabled={loading}
+            tone="accent"
+          />
+          <PrimaryButton
+            compact
+            label="Crear veedor"
+            onPress={() => router.push('/nuevo-veedor')}
+            disabled={loading || isActorLoading}
+            tone="secondary"
+          />
+          <PrimaryButton
+            compact
+            label={`Conflictos${pendingConflicts > 0 ? ` (${pendingConflicts})` : ''}`}
+            onPress={() => router.push('/conflictos')}
+            disabled={loading}
+            tone={pendingConflicts > 0 ? 'accent' : 'secondary'}
+          />
+          <PrimaryButton
+            compact
+            label="Actualizar"
+            onPress={() => setReloadToken((value) => value + 1)}
+            disabled={loading}
+            tone="secondary"
+          />
+        </View>
+      </View>
       {actorError || loadError ? (
         <StatusFeedback status="fallado" message={actorError ?? loadError ?? undefined} />
       ) : null}
@@ -177,28 +228,9 @@ export default function RecintoScreen() {
         </View>
       ) : null}
 
-      <View style={styles.actions}>
-        <PrimaryButton label="Asignar veedores" onPress={() => router.push('/asignar-veedores')} />
-        <PrimaryButton
-          label={`Conflictos pendientes (${pendingConflicts})`}
-          onPress={() => router.push('/conflictos')}
-          disabled={pendingConflicts === 0}
-          tone={pendingConflicts > 0 ? 'accent' : 'secondary'}
-        />
-        <PrimaryButton
-          label="Revisar actas"
-          onPress={() => router.push('/revision-acta')}
-          tone="secondary"
-        />
-      </View>
-
       <SectionTitle title="Mesas y asignaciones" subtitle="Datos reales del recinto." />
       {rows.map((row) => (
-        <Pressable
-          key={row.mesa.id}
-          accessibilityRole="button"
-          style={styles.mesaCard}
-          onPress={() => router.push('/asignar-veedores')}>
+        <View key={row.mesa.id} style={styles.mesaCard}>
           <View style={styles.mesaHeader}>
             <Text style={styles.mesaNumber}>Mesa {row.mesa.number}</Text>
             <StatusChip status={toDisplayStatus(getMesaProgress(row.mesa, row.actas).status)} />
@@ -206,15 +238,26 @@ export default function RecintoScreen() {
           <Text style={styles.location}>{row.mesa.location}</Text>
           <Text style={styles.detail}>Veedor: {row.veedorName}</Text>
           <Text style={styles.detail}>{row.mesa.registeredVoters} electores registrados</Text>
-        </Pressable>
+        </View>
       ))}
-
-      <PrimaryButton label="Cerrar sesión" onPress={handleSignOut} tone="secondary" />
     </Screen>
   );
 }
 
 const styles = StyleSheet.create({
+  actionCard: {
+    gap: spacing.md,
+    padding: spacing.md,
+    borderRadius: radius.md,
+    borderWidth: 2,
+    borderColor: palette.border,
+    backgroundColor: palette.surface,
+  },
+  actions: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.sm,
+  },
   card: {
     gap: spacing.sm,
     padding: spacing.md,
@@ -228,9 +271,6 @@ const styles = StyleSheet.create({
     fontSize: typography.caption,
     fontWeight: '600',
     textAlign: 'right',
-  },
-  actions: {
-    gap: spacing.sm,
   },
   mesaCard: {
     gap: spacing.sm,

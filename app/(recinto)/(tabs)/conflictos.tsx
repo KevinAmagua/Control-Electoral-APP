@@ -1,14 +1,15 @@
-import { router } from 'expo-router';
 import { useCallback, useEffect, useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 
 import { palette, radius, spacing, typography } from '@/core/theme';
 import { dataContainer } from '@/data/container';
+import { listLocalConflicts } from '@/data/local/sqliteClient';
 import { DIGNITY_LABELS } from '@/domain/election/dignity';
 import type { SyncConflict } from '@/domain/sync/operation';
 import { formatDateTime } from '@/presentation/acta/geo';
 import { useActorProfile } from '@/presentation/acta/session-actor';
 import { SectionTitle } from '@/presentation/acta/ui';
+import { useOutboxSync } from '@/presentation/acta/useOutboxSync';
 import {
   LargeTextInput,
   PrimaryButton,
@@ -17,12 +18,23 @@ import {
   type FeedbackStatus,
 } from '@/presentation/components';
 
-type ConflictView = SyncConflict & { mesaNumber: string };
+type ConflictView = {
+  id: string;
+  mesaNumber: string;
+  dignidad: SyncConflict['dignidad'];
+  status: string;
+  localVersion: number;
+  remoteVersion: number;
+  createdAt: string;
+  source: 'servidor' | 'local';
+  remote?: SyncConflict;
+};
 
 type Feedback = { status: FeedbackStatus; message: string };
 
 export default function ConflictosScreen() {
   const { actorId, profile, isLoading: isActorLoading, error: actorError } = useActorProfile();
+  const { flush, error: syncError } = useOutboxSync();
   const [conflicts, setConflicts] = useState<ConflictView[]>([]);
   const [note, setNote] = useState('');
   const [loading, setLoading] = useState(true);
@@ -67,16 +79,45 @@ export default function ConflictosScreen() {
 
         const numbersById = new Map(mesasResult.value.map((mesa) => [mesa.id, mesa.number]));
         const mesaIds = new Set(mesasResult.value.map((mesa) => mesa.id));
-        const pending = conflictsResult.value
-          .filter(
-            (conflict) =>
-              (conflict.status === 'detectado' || conflict.status === 'en_revision') &&
-              mesaIds.has(conflict.mesaId),
-          )
-          .map((conflict) => ({
-            ...conflict,
+        const localConflicts = await listLocalConflicts();
+        const merged = new Map<string, ConflictView>();
+
+        for (const conflict of localConflicts) {
+          if (!mesaIds.has(conflict.mesaId)) {
+            continue;
+          }
+          merged.set(conflict.id, {
+            id: conflict.id,
             mesaNumber: numbersById.get(conflict.mesaId) ?? '—',
-          }));
+            dignidad: conflict.dignity,
+            status: conflict.status,
+            localVersion: conflict.localVersion,
+            remoteVersion: conflict.remoteVersion,
+            createdAt: conflict.createdAt,
+            source: 'local',
+          });
+        }
+
+        for (const conflict of conflictsResult.value) {
+          if (!mesaIds.has(conflict.mesaId)) {
+            continue;
+          }
+          merged.set(conflict.id, {
+            id: conflict.id,
+            mesaNumber: numbersById.get(conflict.mesaId) ?? '—',
+            dignidad: conflict.dignidad,
+            status: conflict.status,
+            localVersion: conflict.localVersion,
+            remoteVersion: conflict.remoteVersion,
+            createdAt: conflict.createdAt,
+            source: 'servidor',
+            remote: conflict,
+          });
+        }
+
+        const pending = Array.from(merged.values())
+          .filter((conflict) => conflict.status === 'detectado' || conflict.status === 'en_revision')
+          .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
 
         if (active) {
           setConflicts(pending);
@@ -99,7 +140,25 @@ export default function ConflictosScreen() {
     };
   }, [profile?.recintoId, isActorLoading, finishLoading, reloadToken, startLoading]);
 
+  useEffect(() => {
+    if (!profile?.recintoId) {
+      return;
+    }
+
+    const unsubscribe = dataContainer.repositories.actas.subscribeToConflicts(() => {
+      setReloadToken((value) => value + 1);
+    });
+    return unsubscribe;
+  }, [profile?.recintoId]);
+
   async function handleResolve(conflict: ConflictView, source: 'local' | 'remota') {
+    if (!conflict.remote) {
+      setFeedback({
+        status: 'guardado_local',
+        message: 'Conflicto local en espera. Sincronice para enviarlo al servidor.',
+      });
+      return;
+    }
     if (!actorId) {
       setFeedback({ status: 'validacion', message: 'No se pudo identificar al coordinador.' });
       return;
@@ -140,8 +199,8 @@ export default function ConflictosScreen() {
           tone="secondary"
         />
       }>
-      {actorError || loadError ? (
-        <StatusFeedback status="fallado" message={actorError ?? loadError ?? undefined} />
+      {actorError || loadError || syncError ? (
+        <StatusFeedback status="fallado" message={actorError ?? loadError ?? syncError ?? undefined} />
       ) : null}
       {feedback ? <StatusFeedback status={feedback.status} message={feedback.message} /> : null}
       {loading || isActorLoading ? (
@@ -157,6 +216,14 @@ export default function ConflictosScreen() {
         />
       )}
 
+      <PrimaryButton
+        label="Sincronizar conflictos locales"
+        onPress={() => {
+          void flush().then(() => setReloadToken((value) => value + 1));
+        }}
+        tone="secondary"
+      />
+
       <LargeTextInput
         label="Nota de resolución"
         value={note}
@@ -169,16 +236,15 @@ export default function ConflictosScreen() {
         <View key={conflict.id} style={styles.card}>
           <SectionTitle
             title={`Mesa ${conflict.mesaNumber} · ${DIGNITY_LABELS[conflict.dignidad]}`}
-            subtitle={`Detectado: ${formatDateTime(conflict.createdAt)}`}
+            subtitle={`Detectado: ${formatDateTime(conflict.createdAt)} · Origen: ${conflict.source}`}
           />
           <View style={styles.versions}>
-            <Text style={styles.version}>Versión base: {conflict.baseVersion}</Text>
             <Text style={styles.version}>Versión local: {conflict.localVersion}</Text>
-            <Text style={styles.version}>Versión remota: {conflict.remoteVersion}</Text>
+            <Text style={styles.version}>Versión recibida: {conflict.remoteVersion}</Text>
             <Text style={styles.version}>Estado: {conflict.status}</Text>
           </View>
           <PrimaryButton
-            label="Prevalece versión remota"
+            label="Usar versión recibida"
             onPress={() => {
               void handleResolve(conflict, 'remota');
             }}
@@ -186,7 +252,7 @@ export default function ConflictosScreen() {
             disabled={busyId !== null}
           />
           <PrimaryButton
-            label="Prevalece versión local"
+            label="Conservar versión local"
             onPress={() => {
               void handleResolve(conflict, 'local');
             }}
@@ -195,8 +261,6 @@ export default function ConflictosScreen() {
           />
         </View>
       ))}
-
-      <PrimaryButton label="Volver al recinto" onPress={() => router.back()} tone="secondary" />
     </Screen>
   );
 }

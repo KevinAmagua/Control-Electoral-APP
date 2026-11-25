@@ -32,6 +32,14 @@ export function createAccountUseCase(users: UserRepository) {
     if (parsed.data.role === 'coordinador_recinto' && !parsed.data.jurisdiction) {
       return failure('JURISDICCION_REQUERIDA', 'Indique la provincia y el cantón del coordinador');
     }
+    if (
+      parsed.data.role === 'coordinador_recinto' &&
+      actor.role === 'coordinador_provincial' &&
+      (parsed.data.jurisdiction?.province !== actor.province ||
+        parsed.data.jurisdiction?.canton !== actor.canton)
+    ) {
+      return failure('FUERA_DE_JURISDICCION', 'El coordinador debe pertenecer a su provincia y cantón');
+    }
     if (parsed.data.role === 'veedor') {
       if (!parsed.data.recintoId) {
         return failure('RECINTO_REQUERIDO', 'Indique el recinto del veedor');
@@ -55,6 +63,22 @@ export function createAccountUseCase(users: UserRepository) {
     }
     if (byCedula.value) {
       return failure('CEDULA_YA_REGISTRADA', 'Ya existe una cuenta con esa cédula');
+    }
+
+    if (parsed.data.role === 'coordinador_recinto' && parsed.data.recintoId) {
+      const byRecinto = await users.listByRecinto(parsed.data.recintoId);
+      if (!byRecinto.ok) {
+        return byRecinto;
+      }
+      const assigned = byRecinto.value.find(
+        (profile) => profile.role === 'coordinador_recinto' && profile.active,
+      );
+      if (assigned) {
+        return failure(
+          'COORDINADOR_YA_ASIGNADO',
+          'Ya hay un coordinador asignado a este recinto. No se puede crear ni asignar otro.',
+        );
+      }
     }
 
     const created = await users.create({ ...parsed.data, createdBy: actor.id });

@@ -12,6 +12,7 @@ export interface AuthRepository {
   changePassword(input: PasswordChangeInput): Promise<Result<Session>>;
   resetPassword(newPassword: string): Promise<Result<Session>>;
   resendConfirmation(email: string): Promise<Result<void>>;
+  verifyEmailOtp(email: string, token: string): Promise<Result<Session>>;
   consumeAuthCallback(url: string): Promise<Result<Session>>;
   requestPasswordRecovery(input: PasswordRecoveryInput): Promise<Result<void>>;
   signOut(): Promise<Result<void>>;

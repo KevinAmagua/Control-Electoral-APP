@@ -1,8 +1,9 @@
 import { ok, type Result } from '@/core/result/result';
-import type { Mesa } from '@/domain/election/mesa';
+import type { CreateMesaInput, Mesa } from '@/domain/election/mesa';
 import type { CreateRecintoInput, Recinto } from '@/domain/election/recinto';
 import type { TerritoryRepository } from '@/domain/repositories/territory-repository';
 
+import { queryWithLocalCache } from '../../local/sqliteClient';
 import { supabase } from './client';
 import { toFailure } from './errors';
 import { mapMesa, mapRecinto, type MesaRow, type RecintoRow } from './mappers';
@@ -10,35 +11,39 @@ import { mapMesa, mapRecinto, type MesaRow, type RecintoRow } from './mappers';
 export function createSupabaseTerritoryRepository(): TerritoryRepository {
   return {
     async listRecintos(): Promise<Result<Recinto[]>> {
-      try {
-        const { data, error } = await supabase
-          .from('recintos')
-          .select('*')
-          .eq('active', true)
-          .order('name', { ascending: true });
-        if (error) {
-          throw error;
+      return queryWithLocalCache('recintos:all', async () => {
+        try {
+          const { data, error } = await supabase
+            .from('recintos')
+            .select('*')
+            .eq('active', true)
+            .order('name', { ascending: true });
+          if (error) {
+            throw error;
+          }
+          return ok((data ?? []).map((row) => mapRecinto(row as RecintoRow)));
+        } catch (error) {
+          return toFailure(error, 'ERROR_LISTAR_RECINTOS');
         }
-        return ok((data ?? []).map((row) => mapRecinto(row as RecintoRow)));
-      } catch (error) {
-        return toFailure(error, 'ERROR_LISTAR_RECINTOS');
-      }
+      });
     },
 
     async getRecinto(recintoId): Promise<Result<Recinto | null>> {
-      try {
-        const { data, error } = await supabase
-          .from('recintos')
-          .select('*')
-          .eq('id', recintoId)
-          .maybeSingle();
-        if (error) {
-          throw error;
+      return queryWithLocalCache(`recinto:${recintoId}`, async () => {
+        try {
+          const { data, error } = await supabase
+            .from('recintos')
+            .select('*')
+            .eq('id', recintoId)
+            .maybeSingle();
+          if (error) {
+            throw error;
+          }
+          return ok(data ? mapRecinto(data as RecintoRow) : null);
+        } catch (error) {
+          return toFailure(error, 'ERROR_CONSULTAR_RECANTO');
         }
-        return ok(data ? mapRecinto(data as RecintoRow) : null);
-      } catch (error) {
-        return toFailure(error, 'ERROR_CONSULTAR_RECANTO');
-      }
+      });
     },
 
     async createRecinto(input: CreateRecintoInput): Promise<Result<Recinto>> {
@@ -93,39 +98,66 @@ export function createSupabaseTerritoryRepository(): TerritoryRepository {
     },
 
     async listMesas(recintoId): Promise<Result<Mesa[]>> {
+      const cacheKey = recintoId ? `mesas:recinto:${recintoId}` : 'mesas:all';
+      return queryWithLocalCache(cacheKey, async () => {
+        try {
+          let query = supabase
+            .from('mesas')
+            .select('*')
+            .eq('active', true)
+            .order('number', { ascending: true });
+          if (recintoId) {
+            query = query.eq('recinto_id', recintoId);
+          }
+          const { data, error } = await query;
+          if (error) {
+            throw error;
+          }
+          return ok((data ?? []).map((row) => mapMesa(row as MesaRow)));
+        } catch (error) {
+          return toFailure(error, 'ERROR_LISTAR_MESAS');
+        }
+      });
+    },
+
+    async createMesa(input: CreateMesaInput): Promise<Result<Mesa>> {
       try {
-        let query = supabase
+        const { data, error } = await supabase
           .from('mesas')
+          .insert({
+            recinto_id: input.recintoId,
+            number: input.number,
+            registered_voters: input.registeredVoters,
+            location: input.location,
+            active: true,
+          })
           .select('*')
-          .eq('active', true)
-          .order('number', { ascending: true });
-        if (recintoId) {
-          query = query.eq('recinto_id', recintoId);
+          .single();
+        if (error || !data) {
+          throw error ?? new Error('No fue posible registrar la mesa');
         }
-        const { data, error } = await query;
-        if (error) {
-          throw error;
-        }
-        return ok((data ?? []).map((row) => mapMesa(row as MesaRow)));
+        return ok(mapMesa(data as MesaRow));
       } catch (error) {
-        return toFailure(error, 'ERROR_LISTAR_MESAS');
+        return toFailure(error, 'ERROR_CREAR_MESA');
       }
     },
 
     async getMesa(mesaId): Promise<Result<Mesa | null>> {
-      try {
-        const { data, error } = await supabase
-          .from('mesas')
-          .select('*')
-          .eq('id', mesaId)
-          .maybeSingle();
-        if (error) {
-          throw error;
+      return queryWithLocalCache(`mesa:${mesaId}`, async () => {
+        try {
+          const { data, error } = await supabase
+            .from('mesas')
+            .select('*')
+            .eq('id', mesaId)
+            .maybeSingle();
+          if (error) {
+            throw error;
+          }
+          return ok(data ? mapMesa(data as MesaRow) : null);
+        } catch (error) {
+          return toFailure(error, 'ERROR_CONSULTAR_MESA');
         }
-        return ok(data ? mapMesa(data as MesaRow) : null);
-      } catch (error) {
-        return toFailure(error, 'ERROR_CONSULTAR_MESA');
-      }
+      });
     },
   };
 }

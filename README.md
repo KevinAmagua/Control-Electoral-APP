@@ -35,9 +35,28 @@ Aplicación móvil Expo/React Native para coordinadores y veedores electorales. 
 
    ```text
    controlectoraladn://callback
+   controlectoraladn://confirmar-correo
+   exp://**
    ```
 
-4. Configurar SMTP personalizado en Supabase → Auth → SMTP Settings y ajustar las plantillas de invitación, confirmación y recuperación en español usando el enlace de redirección de la APK.
+   `exp://**` cubre el host dinámico de Expo Go (IP LAN o `127.0.0.1`) y la ruta `/--/callback` o `/--/confirmar-correo` que calcula `Linking.createURL()`. Las variables `EXPO_PUBLIC_*_REDIRECT_URL` quedan solo como fallback para development builds.
+
+4. Publicar `reset-password.html` en GitHub Pages:
+
+   1. Hacer commit y push de `reset-password.html` a la rama `main`.
+   2. En GitHub → Settings → Pages → Build and deployment, elegir Source `Deploy from a branch`, Branch `main` y carpeta `/ (root)`.
+   3. Guardar y esperar a que el sitio responda en `https://kevinamagua.github.io/Control-Electoral-APP/reset-password.html` (sin parámetros debe mostrar “Enlace incompleto”, no 404).
+   4. Configurar SMTP personalizado en Supabase → Auth → SMTP Settings.
+   5. En Auth → Templates → Reset Password usar esta plantilla para evitar la redirección a la app:
+
+   ```html
+   <h2>Restablecer contraseña</h2>
+   <p>Recibimos una solicitud para restablecer la contraseña de su cuenta.</p>
+   <p><a href="https://kevinamagua.github.io/Control-Electoral-APP/reset-password.html?token_hash={{ .TokenHash }}&type=recovery">Cambiar contraseña</a></p>
+   <p>Si no solicitó este cambio, ignore este correo.</p>
+   ```
+
+   La página pública consume el token con Supabase Auth, guarda la nueva clave y llama `completar_cambio_clave`; no depende del Site URL ni de `redirect_to`. Supabase reescribe HTML a `text/plain` en el dominio del proyecto, por eso la página vive en GitHub Pages. Las plantillas de invitación y confirmación sí pueden seguir usando `{{ .ConfirmationURL }}` o `{{ .RedirectTo }}`.
 
 5. Habilitar protección contra contraseñas filtradas en Supabase → Auth → Providers → Email.
 
@@ -75,6 +94,8 @@ eas update
 ## Flujo de autenticación
 
 - El coordinador provincial crea coordinadores de recinto; el coordinador de recinto crea y reasigna veedores.
+- Todas las cuentas demo, incluidas `jonyalexander2003@gmail.com` y `alexade2003v@gmail.com`, usan la clave temporal `Adn2026!` y deben cambiarla en el primer acceso.
+- Para probar RF-06 existe un segundo coordinador provincial en el seed: `coordinador.guayas@adn.ec` (Guayas/Guayaquil); los recintos `GYE-001` y `GYE-002` permiten verificar el aislamiento entre jurisdicciones.
 - La creación de cuentas se hace desde la Edge Function `create-user`; la clave temporal se entrega en la respuesta y el correo de invitación lo envía Supabase con SMTP propio.
 - El primer acceso con clave temporal obliga a cambiarla en `app/(auth)/cambiar-clave.tsx` o `app/(auth)/restablecer-clave.tsx`, según el enlace recibido.
 - El acceso exige correo verificado; la sesión se mantiene con `SessionProvider` y el deep link se procesa en `app/(auth)/callback.tsx`.

@@ -1,4 +1,3 @@
-import { router } from 'expo-router';
 import { useCallback, useEffect, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 
@@ -202,7 +201,6 @@ export default function RevisionActasScreen() {
           message="No hay actas que coincidan con los filtros seleccionados."
         />
       ) : null}
-      <PrimaryButton label="Volver al panel" onPress={() => router.back()} tone="secondary" />
     </Screen>
   );
 }

@@ -21,6 +21,13 @@ export type CurrentPlace = {
   warning: string | null;
 };
 
+export function formatRecintoLocation(recinto: Recinto): string {
+  const address = [recinto.address, recinto.parish, `${recinto.province} · ${recinto.canton}`]
+    .filter((value): value is string => Boolean(value))
+    .join(', ');
+  return `${address} · ${recinto.gpsLat.toFixed(6)}, ${recinto.gpsLng.toFixed(6)} · radio ${recinto.radiusMeters} m`;
+}
+
 function formatGeocodedAddress(place: Location.LocationGeocodedAddress): string | null {
   if (place.formattedAddress) {
     return place.formattedAddress;
@@ -116,6 +123,11 @@ export async function captureRecintoLocation(
     const permission = await Location.requestForegroundPermissionsAsync();
     if (!permission.granted) {
       return failure('UBICACION_SIN_PERMISO', 'Permita el acceso a la ubicación para registrar el acta');
+    }
+
+    const servicesEnabled = await Location.hasServicesEnabledAsync();
+    if (!servicesEnabled) {
+      return failure('UBICACION_NO_DISPONIBLE', 'Active el GPS del dispositivo para registrar el acta');
     }
 
     const samples: Location.LocationObject[] = [];

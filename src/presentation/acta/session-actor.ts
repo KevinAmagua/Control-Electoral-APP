@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 
 import { dataContainer } from '@/data/container';
+import { captureError } from '@/data/monitoring/sentry';
 import type { UserProfile } from '@/domain/user/profile';
 import { useSession } from '@/presentation/session/SessionProvider';
 
@@ -47,6 +48,9 @@ export function useActorSession() {
       if (result.ok && result.value) {
         setResolution(result.value.id, null, false);
       } else {
+        if (!result.ok) {
+          captureError(new Error(result.error.code), { scope: 'session.resolveActorByEmail' });
+        }
         setResolution(null, result.ok ? 'No se encontró el perfil de la sesión.' : result.error.message, false);
       }
     });
@@ -99,6 +103,9 @@ export function useActorProfile() {
         setProfile(result.value);
         setError(null);
       } else {
+        if (!result.ok) {
+          captureError(new Error(result.error.code), { scope: 'session.loadActorProfile' });
+        }
         setProfile(null);
         setError(result.ok ? 'No se encontró el perfil del usuario.' : result.error.message);
       }

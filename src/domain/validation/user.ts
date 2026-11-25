@@ -1,21 +1,16 @@
 import { z } from 'zod';
 
 import { cedulaSchema } from './cedula';
-import { emailSchema, phoneSchema } from './contact';
+import { emailSchema, personNameSchema, phoneSchema } from './contact';
 import type { CreateUserInput } from '../user/profile';
-
-const optionalPhoneSchema = z
-  .union([z.literal(''), phoneSchema])
-  .transform((value) => (value === '' ? null : value))
-  .nullable();
 
 export const createUserSchema = z
   .object({
     role: z.enum(['coordinador_provincial', 'coordinador_recinto', 'veedor']),
     cedula: cedulaSchema,
-    firstName: z.string().trim().min(2, 'El nombre es obligatorio'),
-    lastName: z.string().trim().min(2, 'El apellido es obligatorio'),
-    phone: optionalPhoneSchema,
+    firstName: personNameSchema,
+    lastName: personNameSchema,
+    phone: phoneSchema,
     email: emailSchema,
     recintoId: z.string().uuid('Seleccione un recinto válido').nullable(),
     jurisdiction: z

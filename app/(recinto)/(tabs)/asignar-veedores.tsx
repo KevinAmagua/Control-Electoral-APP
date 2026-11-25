@@ -1,6 +1,6 @@
 import { zodResolver } from '@hookform/resolvers/zod';
-import { router } from 'expo-router';
-import { useCallback, useEffect, useState } from 'react';
+import { router, useFocusEffect } from 'expo-router';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Controller, useForm, useWatch } from 'react-hook-form';
 import type { z } from 'zod';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
@@ -41,6 +41,7 @@ export default function AsignarVeedoresScreen() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<Feedback | null>(null);
   const [reloadToken, setReloadToken] = useState(0);
+  const isFirstFocus = useRef(true);
   const {
     control,
     handleSubmit,
@@ -68,6 +69,16 @@ export default function AsignarVeedoresScreen() {
       setLoadError(null);
     });
   }, []);
+
+  useFocusEffect(
+    useCallback(() => {
+      if (isFirstFocus.current) {
+        isFirstFocus.current = false;
+        return;
+      }
+      setReloadToken((value) => value + 1);
+    }, []),
+  );
 
   useEffect(() => {
     let active = true;
@@ -215,15 +226,36 @@ export default function AsignarVeedoresScreen() {
   return (
     <Screen
       title="Asignar veedores"
-      subtitle="Mesas reales y veedores activos del recinto"
-      action={
-        <PrimaryButton
-          label="Actualizar"
-          onPress={() => setReloadToken((value) => value + 1)}
-          disabled={loading}
-          tone="secondary"
+      subtitle="Mesas reales y veedores activos del recinto">
+      <View style={styles.actionCard}>
+        <SectionTitle
+          title="Acciones rápidas"
+          subtitle="Registre una mesa, cree veedores o actualice la lista."
         />
-      }>
+        <View style={styles.actions}>
+          <PrimaryButton
+            compact
+            label="Nueva mesa"
+            onPress={() => router.push('/nueva-mesa')}
+            disabled={loading}
+            tone="accent"
+          />
+          <PrimaryButton
+            compact
+            label="Crear veedor"
+            onPress={() => router.push('/nuevo-veedor')}
+            disabled={loading || isActorLoading}
+            tone="secondary"
+          />
+          <PrimaryButton
+            compact
+            label="Actualizar"
+            onPress={() => setReloadToken((value) => value + 1)}
+            disabled={loading}
+            tone="secondary"
+          />
+        </View>
+      </View>
       {actorError || loadError ? (
         <StatusFeedback status="fallado" message={actorError ?? loadError ?? undefined} />
       ) : null}
@@ -307,13 +339,34 @@ export default function AsignarVeedoresScreen() {
         )}
       />
 
+      {selectedRows.length > 0 && previousVeedorId !== null && veedorId === previousVeedorId ? (
+        <StatusFeedback
+          status="validacion"
+          message="Las mesas seleccionadas ya están asignadas al veedor elegido. Seleccione otro veedor para reasignar."
+        />
+      ) : null}
+      {selectedRows.length > 0 &&
+      previousVeedorId !== null &&
+      veedorId !== null &&
+      veedorId !== previousVeedorId &&
+      !canReplace ? (
+        <StatusFeedback
+          status="validacion"
+          message="Estas mesas ya tienen veedor. Escriba el motivo y pulse Reasignar veedor; Asignar veedor solo aplica a mesas libres."
+        />
+      ) : null}
+
       {mesaIds.length > 0 ? (
         <PrimaryButton
-          label="Crear veedor sustituto"
+          label={previousVeedorId ? 'Crear veedor sustituto' : 'Crear y asignar veedor'}
           onPress={() =>
             router.push({
               pathname: '/nuevo-veedor',
-              params: { mesas: mesaIds.join(',') },
+              params: {
+                mesas: mesaIds.join(','),
+                ...(previousVeedorId ? { previous: previousVeedorId } : {}),
+                ...(reason.trim() ? { reason: reason.trim() } : {}),
+              },
             })
           }
           tone="secondary"
@@ -338,12 +391,24 @@ export default function AsignarVeedoresScreen() {
           message="Para reasignar, todas las mesas seleccionadas deben tener el mismo veedor activo."
         />
       ) : null}
-      <PrimaryButton label="Volver al recinto" onPress={() => router.back()} tone="secondary" />
     </Screen>
   );
 }
 
 const styles = StyleSheet.create({
+  actionCard: {
+    gap: spacing.md,
+    padding: spacing.md,
+    borderRadius: radius.md,
+    borderWidth: 2,
+    borderColor: palette.border,
+    backgroundColor: palette.surface,
+  },
+  actions: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.sm,
+  },
   row: {
     flexDirection: 'row',
     alignItems: 'center',

@@ -1,22 +1,26 @@
-import { router } from 'expo-router';
 import { useCallback, useEffect, useState } from 'react';
 
 import { dataContainer } from '@/data/container';
 import type { Acta } from '@/domain/acta/acta';
 import type { Mesa } from '@/domain/election/mesa';
 import type { Recinto } from '@/domain/election/recinto';
+import { ActaCorrectionForm } from '@/presentation/acta/ActaCorrectionForm';
 import { ActaReviewList } from '@/presentation/acta/ActaReview';
-import { listAllCandidateOptions } from '@/presentation/acta/candidates';
+import { listAllCandidateOptions, type CandidateOption } from '@/presentation/acta/candidates';
 import { useActorProfile } from '@/presentation/acta/session-actor';
-import { PrimaryButton, Screen, StatusFeedback } from '@/presentation/components';
+import { Screen, StatusFeedback } from '@/presentation/components';
 
 export default function RevisionActaScreen() {
-  const { profile, isLoading: isActorLoading, error: actorError } = useActorProfile();
+  const { actorId, profile, isLoading: isActorLoading, error: actorError } = useActorProfile();
   const [recinto, setRecinto] = useState<Recinto | null>(null);
   const [mesasById, setMesasById] = useState<Map<string, Mesa>>(new Map());
   const [recintosById, setRecintosById] = useState<Map<string, Recinto>>(new Map());
   const [actas, setActas] = useState<Acta[]>([]);
+  const [candidateOptions, setCandidateOptions] = useState<CandidateOption[]>([]);
   const [candidateNames, setCandidateNames] = useState<Record<string, string>>({});
+  const [selectedActa, setSelectedActa] = useState<Acta | null>(null);
+  const [correctionMessage, setCorrectionMessage] = useState<string | null>(null);
+  const [reloadToken, setReloadToken] = useState(0);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
 
@@ -65,6 +69,7 @@ export default function RevisionActaScreen() {
             recintoResult.value ? new Map([[recintoResult.value.id, recintoResult.value]]) : new Map(),
           );
           setActas(actasResult.value);
+          setCandidateOptions(candidatesResult.value);
           setCandidateNames(
             candidatesResult.value.reduce<Record<string, string>>((names, candidate) => {
               names[candidate.id] = `${candidate.organizationLabel} · ${candidate.fullName}`;
@@ -88,7 +93,7 @@ export default function RevisionActaScreen() {
     return () => {
       active = false;
     };
-  }, [profile?.recintoId, isActorLoading, finishLoading, startLoading]);
+  }, [profile?.recintoId, isActorLoading, finishLoading, reloadToken, startLoading]);
 
   return (
     <Screen
@@ -109,13 +114,32 @@ export default function RevisionActaScreen() {
           }
         />
       )}
+      {correctionMessage ? (
+        <StatusFeedback status="guardado" message={correctionMessage} />
+      ) : null}
+      {selectedActa && actorId ? (
+        <ActaCorrectionForm
+          acta={selectedActa}
+          actorId={actorId}
+          candidates={candidateOptions}
+          onCancel={() => setSelectedActa(null)}
+          onDone={() => {
+            setCorrectionMessage('Corrección guardada. El acta se actualizó a una nueva versión.');
+            setSelectedActa(null);
+            setReloadToken((value) => value + 1);
+          }}
+        />
+      ) : null}
       <ActaReviewList
         actas={actas}
         mesasById={mesasById}
         recintosById={recintosById}
         candidateNames={candidateNames}
+        onCorrect={(acta) => {
+          setCorrectionMessage(null);
+          setSelectedActa(acta);
+        }}
       />
-      <PrimaryButton label="Volver al recinto" onPress={() => router.back()} tone="secondary" />
     </Screen>
   );
 }

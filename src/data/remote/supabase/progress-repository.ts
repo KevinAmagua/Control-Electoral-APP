@@ -8,6 +8,7 @@ import { createSupabaseActaRepository } from './acta-repository';
 import { supabase } from './client';
 import { toFailure } from './errors';
 import { mapMesa, mapRecinto, type MesaRow, type RecintoRow } from './mappers';
+import { subscribeToTableChanges } from './realtime';
 
 export function createSupabaseProgressRepository(): ProgressRepository {
   const actas = createSupabaseActaRepository();
@@ -62,6 +63,10 @@ export function createSupabaseProgressRepository(): ProgressRepository {
       } catch (error) {
         return toFailure(error, 'ERROR_CONSULTAR_PROGRESO');
       }
+    },
+
+    subscribeToProgress(listener) {
+      return subscribeToTableChanges('mesas', listener);
     },
   };
 }

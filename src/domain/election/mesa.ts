@@ -8,6 +8,13 @@ export type Mesa = {
   active?: boolean;
 };
 
+export type CreateMesaInput = {
+  recintoId: string;
+  number: string;
+  registeredVoters: number;
+  location: string | null;
+};
+
 export const MESAS: readonly Mesa[] = [
   {
     id: 'mesa-001',

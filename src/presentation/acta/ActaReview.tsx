@@ -7,7 +7,7 @@ import type { Acta } from '@/domain/acta/acta';
 import { DIGNITY_LABELS } from '@/domain/election/dignity';
 import type { Mesa } from '@/domain/election/mesa';
 import type { Recinto } from '@/domain/election/recinto';
-import { StatusFeedback } from '@/presentation/components';
+import { PrimaryButton, StatusFeedback } from '@/presentation/components';
 
 import { distanceBetweenCoordinates, formatCoordinate, formatDateTime } from './geo';
 import { InfoRow, StatusChip } from './ui';
@@ -22,9 +22,16 @@ type ActaReviewCardProps = {
   mesa?: Mesa;
   recinto?: Recinto;
   candidateNames?: Record<string, string>;
+  onCorrect?: (acta: Acta) => void;
 };
 
-export function ActaReviewCard({ acta, mesa, recinto, candidateNames }: ActaReviewCardProps) {
+export function ActaReviewCard({
+  acta,
+  mesa,
+  recinto,
+  candidateNames,
+  onCorrect,
+}: ActaReviewCardProps) {
   const [photo, setPhoto] = useState<{ path: string; uri: string | null } | null>(null);
 
   useEffect(() => {
@@ -171,6 +178,15 @@ export function ActaReviewCard({ acta, mesa, recinto, candidateNames }: ActaRevi
           ))}
         </View>
       ) : null}
+
+      {onCorrect ? (
+        <PrimaryButton
+          compact
+          label="Corregir acta"
+          tone="secondary"
+          onPress={() => onCorrect(acta)}
+        />
+      ) : null}
     </View>
   );
 }
@@ -180,11 +196,13 @@ export function ActaReviewList({
   mesasById,
   recintosById,
   candidateNames,
+  onCorrect,
 }: {
   actas: readonly Acta[];
   mesasById: Map<string, Mesa>;
   recintosById: Map<string, Recinto>;
   candidateNames?: Record<string, string>;
+  onCorrect?: (acta: Acta) => void;
 }) {
   return (
     <>
@@ -198,6 +216,7 @@ export function ActaReviewList({
             mesa={mesa}
             recinto={recinto}
             candidateNames={candidateNames}
+            onCorrect={onCorrect}
           />
         );
       })}

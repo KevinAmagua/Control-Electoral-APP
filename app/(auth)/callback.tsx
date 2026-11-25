@@ -1,11 +1,12 @@
 import { Link, router } from 'expo-router';
 import * as Linking from 'expo-linking';
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 
 import { palette, spacing, typography } from '@/core/theme';
 import { dataContainer } from '@/data/container';
-import { PrimaryButton, Screen, StatusFeedback } from '@/presentation/components';
+import { isRecoveryCallbackUrl } from '@/domain/validation/auth';
+import { LargeTextInput, PrimaryButton, Screen, StatusFeedback } from '@/presentation/components';
 import type { FeedbackStatus } from '@/presentation/components/feedback/StatusFeedback';
 import { getHomeRoute } from '@/presentation/navigation/role-routes';
 import { useSession } from '@/presentation/session/SessionProvider';
@@ -13,60 +14,94 @@ import { useSession } from '@/presentation/session/SessionProvider';
 export default function AuthCallbackScreen() {
   const linkingUrl = Linking.useLinkingURL();
   const { refresh } = useSession();
-  const processedUrl = useRef<string | null>(null);
+  const processedUrls = useRef<Set<string>>(new Set());
   const isProcessingRef = useRef(false);
+  const [pastedUrl, setPastedUrl] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
   const [feedback, setFeedback] = useState<{ status: FeedbackStatus; message: string } | null>(null);
 
-  useEffect(() => {
-    if (!linkingUrl || processedUrl.current === linkingUrl || isProcessingRef.current) {
-      return;
-    }
-    processedUrl.current = linkingUrl;
-    isProcessingRef.current = true;
-
-    let cancelled = false;
-    setIsProcessing(true);
-
-    void (async () => {
-      const result = await dataContainer.repositories.auth.consumeAuthCallback(linkingUrl);
-      await refresh();
-      if (cancelled) {
+  const processCallback = useCallback(
+    async (url: string) => {
+      if (!url || processedUrls.current.has(url) || isProcessingRef.current) {
         return;
       }
+      processedUrls.current.add(url);
+      isProcessingRef.current = true;
+      setIsProcessing(true);
+      setFeedback(null);
+
+      const result = await dataContainer.repositories.auth.consumeAuthCallback(url);
+      await refresh();
+
       isProcessingRef.current = false;
       setIsProcessing(false);
 
       if (!result.ok) {
+        processedUrls.current.delete(url);
         setFeedback({ status: 'fallado', message: result.error.message });
         return;
       }
 
       setFeedback({ status: 'guardado', message: 'Correo verificado correctamente' });
-      router.replace(
-        result.value.mustChangePassword ? '/restablecer-clave' : getHomeRoute(result.value),
-      );
-    })();
+      if (isRecoveryCallbackUrl(url) || result.value.mustChangePassword) {
+        router.replace({ pathname: '/restablecer-clave', params: { recovery: '1' } });
+        return;
+      }
+      router.replace(getHomeRoute(result.value));
+    },
+    [refresh],
+  );
 
-    return () => {
-      cancelled = true;
-    };
-  }, [linkingUrl, refresh]);
+  useEffect(() => {
+    if (linkingUrl) {
+      void Promise.resolve().then(() => processCallback(linkingUrl));
+    }
+  }, [linkingUrl, processCallback]);
+
+  const handleManualSubmit = () => {
+    const url = pastedUrl.trim();
+    if (!url) {
+      setFeedback({ status: 'validacion', message: 'Pegue el enlace enviado a su correo' });
+      return;
+    }
+    void processCallback(url);
+  };
 
   return (
-    <Screen title="Verificación de correo" subtitle="Procesando el enlace de acceso">
+    <Screen
+      title="Verificación de correo"
+      subtitle="Abra el enlace del correo o péguelo aquí para continuar">
       <View style={styles.content}>
         {isProcessing ? (
           <StatusFeedback status="en_proceso" message="Validando su enlace seguro..." />
         ) : null}
         {feedback ? <StatusFeedback status={feedback.status} message={feedback.message} /> : null}
-        {!linkingUrl ? (
+        {!linkingUrl && !feedback ? (
           <StatusFeedback
             status="validacion"
-            message="Abra el enlace enviado a su correo desde este dispositivo"
+            message="Si el enlace abre una página en blanco, copie el enlace completo de Gmail, incluido lo que empieza con https://www.google.com/url, y péguelo aquí. Cada enlace solo se usa una vez; si ya lo usó, solicite uno nuevo."
           />
         ) : null}
+        <LargeTextInput
+          label="Enlace del correo"
+          value={pastedUrl}
+          onChangeText={setPastedUrl}
+          placeholder="https://www.google.com/url?q=https://.../auth/v1/verify?token=... o el token de 40 caracteres"
+          autoCapitalize="none"
+          autoCorrect={false}
+          multiline
+          numberOfLines={3}
+        />
+        <PrimaryButton
+          label="Procesar enlace"
+          onPress={handleManualSubmit}
+          isLoading={isProcessing}
+          disabled={isProcessing}
+        />
         <PrimaryButton label="Ir al inicio de sesión" onPress={() => router.replace('/login')} />
+        <Link href="/confirmar-correo" style={styles.link}>
+          Verificar con el código enviado por correo
+        </Link>
         <Link href="/login" style={styles.link}>
           Iniciar sesión con mi contraseña
         </Link>
